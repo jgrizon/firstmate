@@ -914,3 +914,117 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 ```sh
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
+
+## Antigravity CLI (agy)
+
+agy runs crewmate and scout work only; `bin/fm-spawn.sh` refuses a `--secondmate` launch on it because its `Stop` hook carries no blocking channel a primary's turn-end guard could use.
+The evidence below was produced on 2026-08-20 against the installed CLI on macOS 26.5.2 (Darwin 27.0.0) arm64 with tmux 3.6a.
+
+- Binary: `~/.local/bin/agy`, resolved from `PATH`. `agy --version` reported `1.1.15`.
+- `ps -o comm=` and `#{pane_current_command}` both report exactly `agy`, so identity needs no path or argv rule: it is a single Go binary with no launcher indirection and no version-named target.
+
+### Model catalog
+
+```text
+$ agy models
+gemini-3.7-flash-high	Gemini 3.7 Flash (High)
+gemini-3.7-flash-medium	Gemini 3.7 Flash (Medium)
+gemini-3.7-flash-low	Gemini 3.7 Flash (Low)
+gemini-3.6-flash-{high,medium,low}
+gemini-3.5-flash-{high,medium,low}
+gemini-3.1-pro-{high,low}
+claude-sonnet-4-6	Claude Sonnet 4.6 (Thinking)
+claude-opus-4-6-thinking	Claude Opus 4.6 (Thinking)
+gpt-oss-120b-medium	GPT-OSS 120B (Medium)
+```
+
+The Gemini ids encode the reasoning level, so firstmate selects the class through the model id and emits no `--effort` flag even though `--effort low|medium|high` exists; the requested effort stays in task metadata.
+
+### Lifecycle hook payloads
+
+`~/.gemini/config/hooks.json` is the only hook surface firstmate can use: workspace `.agents/hooks.json` needs a folder-trust grant firstmate will not write.
+Hook commands run with the working directory set to that config directory, and the process environment carries `ANTIGRAVITY_CONVERSATION_ID` only.
+A probe hook registered for `PreInvocation`, `PostInvocation`, and `Stop` fired for all three, in that order, on an interactive and a `-p` run.
+
+```text
+Stop   {"artifactDirectoryPath":"…/brain/89cb1ee5…","conversationId":"89cb1ee5…","error":"",
+        "executionNum":0,"fullyIdle":true,"modelName":"gemini-3.7-flash-high",
+        "terminationReason":"NO_TOOL_CALL","transcriptPath":"…/transcript_full.jsonl",
+        "workspacePaths":["/tmp/agy-probe-ws"]}
+```
+
+`workspacePaths` was `[]` on every run launched WITHOUT `--add-dir`, including from a git repository root, and carried the exact directory when `--add-dir` was passed.
+That is why `bin/fm-spawn.sh` binds the task worktree with `--add-dir`: it is the only observed way the guarded hook can tell one task's workspace from another's.
+A `Stop` whose `fullyIdle` is false is a mid-turn boundary; the installed hook publishes nothing for it.
+
+### Folder trust
+
+`--dangerously-skip-permissions` does NOT suppress the folder-trust dialog and agy exposes no `--trust` flag.
+A first launch in a not-yet-trusted path rendered:
+
+```text
+Do you trust the contents of this project?
+
+Antigravity CLI requires permission to read, edit, and execute files here.
+
+> Yes, I trust this folder
+  No, exit
+
+  ↑/↓ Navigate · enter Confirm
+```
+
+One Enter cleared it.
+The decision persists in `~/.gemini/antigravity-cli/settings.json` under `trustedWorkspaces` and does NOT cascade to subdirectories: that list held `/Users/<user>` and still recorded a separate entry for a worktree beneath it.
+Every task gets a fresh worktree path, so every spawn meets this dialog, and `fm-spawn` accepts it in the pane only after the dialog's own text is on screen and the trusting option is the selected one.
+
+### Composer and rendered footer
+
+agy draws the SEPARATED shape, not a bordered box.
+An idle pane, captured with row numbers:
+
+```text
+15|────────────────────────────────────────────────…
+16|>
+17|────────────────────────────────────────────────…
+18|? for shortcuts                       Gemini 3.7 Flash · low
+```
+
+`#{cursor_y}` was 16 with `#{cursor_flag}` 1, so the cursor anchors the composer normally.
+Mid-turn the footer read `esc to cancel`; idle it read `? for shortcuts`.
+While a background task runs, agy draws a SECOND rule pair below the composer holding the task strip, which is what the scan's cursor-holding-pair latch exists for.
+
+Live verdicts from `fm_backend_composer_state tmux <pane>` after the classifier change, against that same pane:
+
+| Pane state | Verdict |
+| --- | --- |
+| idle, empty composer | `empty` |
+| idle, `hello there` typed | `pending` |
+| idle, empty composer, background-task strip below | `empty` |
+| mid-turn, empty composer | `unknown` |
+
+### Slash submission
+
+Typing a bare `/usage` opened a popup showing `↑/↓ Navigate · enter Select · tab Complete`, and ONE Enter both selected and ran it; the same held for the firstmate skill `/find-skills`.
+Adding a space and argument text closed the popup entirely.
+agy therefore has neither grok's nor cursor's first-Enter swallow.
+
+### Skills discovery
+
+agy scans neither `~/.claude/skills` nor `~/.agents/skills`.
+Before `~/.gemini/config/skills.json` existed, a fresh session listed only its two built-in skills.
+An entry written as `{"path": "~/.agents/skills"}` changed nothing - the documented home-relative form is accepted but not resolved in the global config - while the same entry written absolute made all 35 user skills visible, `no-mistakes` among them.
+A live agy crewmate then answered `/no-mistakes` with `no-mistakes axi run`, the command the skill body names.
+
+### End to end
+
+A real `bin/fm-spawn.sh <id> <project> --scout --harness agy --model gemini-3.7-flash-low` cleared the trust dialog on its own, processed its brief, recorded `state=idle source=agy-hook` in the busy record, and touched `state/<id>.turn-ended`.
+An agy session started by hand in an unregistered workspace, with the same global hook installed, left both untouched.
+`bin/fm-control.sh <id> interrupt` ended a running turn (footer returned to `? for shortcuts`) and reported `cancel=unconfirmed`, which is correct: agy fires no hook for a manual interrupt, so the busy record stayed at its last recorded state exactly as Claude's does.
+`exit` stopped the agent and printed `agy --conversation=<uuid>`; `relaunch` armed a fresh busy generation, retired the previous registry entry, and the replacement worker processed its progress note.
+`bin/fm-teardown.sh` removed the worktree pointer, the state token, and the private registry entry.
+
+Refresh this harness-dependent proof before accepting an agy upgrade:
+
+```sh
+FM_AGY_SIGNALS_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-agy-signals-live-e2e.test.sh
+```
