@@ -80,7 +80,7 @@ case "${1:-}" in
           ;;
       esac
     done
-    printf '1\n'; exit 0 ;;
+    printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
   list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
   new-window|kill-pane|set-option) exit 0 ;;
@@ -124,6 +124,7 @@ run_control() {
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_FAKE_DIR="$fakedir" \
+    FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.1 FM_CONTROL_LAUNCH_WAIT=0.1 \
     FM_BACKEND=tmux PATH="$fakebin:$PATH" \
     "$CONTROL" "$@" 2>&1
 }
