@@ -2,11 +2,14 @@
 # Install or remove Firstmate's global Antigravity CLI (agy) wiring.
 #
 # agy reads two shared, captain-owned JSON files under ~/.gemini/config, so this
-# command is the sole owner of the surgical edits to both. It never rewrites a
-# file wholesale: install adds or replaces exactly one Firstmate-owned key or
-# entry, remove excises exactly that one, and every other key the captain wrote
-# is preserved byte-for-byte in place. Missing directories, symlinked files,
-# malformed JSON, or a non-object top level are refused without any write.
+# command is the sole owner of the surgical edits to both. The guarantee is a
+# KEY guarantee, not a byte one: install adds or replaces exactly one
+# Firstmate-owned key or entry, remove excises exactly that one, and every other
+# key and value the captain wrote survives semantically intact. Their FORMATTING
+# does not - the document is parsed and re-serialized as two-space JSON, so a
+# hand-indented file is reflowed on the first edit. Missing directories,
+# symlinked files, malformed JSON, or a non-object top level are refused without
+# any write.
 #
 # Two things are installed, both required before an agy crewmate is usable:
 #

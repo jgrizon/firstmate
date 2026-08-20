@@ -47,6 +47,15 @@ AGY_PRELAUNCH_SCREEN=$(printf '%s\n' \
   'Antigravity CLI 1.1.15' \
   'loading workspace...')
 
+# The pane after agy DIED during startup and the captain's shell redrew a bare
+# prompt. The classifier reads this as `empty` through its bare-glyph path with
+# no identity probe at all (asserted below), so an `empty` verdict alone is not
+# proof agy is up; only agy's own footer, which this screen has none of, is.
+AGY_DEAD_SHELL_SCREEN=$(printf '%s\n' \
+  '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"' \
+  'agy: error: unknown model id' \
+  '❯ ')
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -69,27 +78,40 @@ fake_screen() {
       rule; printf '> \n'; rule
       printf '? for shortcuts                  Gemini 3.7 Flash · low\n'
       ;;
-    pending)
-      # The pane BEFORE agy has drawn anything, held for a few captures so the
-      # trust wait has to survive it. The dialog renders afterwards.
-      printf '%s\n' "$FM_FAKE_AGY_PENDING_SCREEN"
-      printf 'x' >> "$FM_FAKE_AGY_STATE.pending"
-      if [ "$(wc -c < "$FM_FAKE_AGY_STATE.pending" | tr -d ' ')" -ge 4 ]; then
-        printf 'trust\n' > "$FM_FAKE_AGY_STATE"
-      fi
-      ;;
+    pending) hold_then_trust "$FM_FAKE_AGY_PENDING_SCREEN" ;;
+    dead-shell) hold_then_trust "$FM_FAKE_AGY_DEAD_SCREEN" ;;
     *) printf 'shell starting\n$ \n' ;;
   esac
+}
+# A screen the pane holds for a few captures before the trust dialog renders,
+# so the wait has to survive it rather than mistake it for a started agy.
+hold_then_trust() {  # <screen>
+  printf '%s\n' "$1"
+  printf 'x' >> "$FM_FAKE_AGY_STATE.held"
+  if [ "$(wc -c < "$FM_FAKE_AGY_STATE.held" | tr -d ' ')" -ge 4 ]; then
+    printf 'trust\n' > "$FM_FAKE_AGY_STATE"
+  fi
 }
 fake_cursor_y() {
   case "$state" in
     running) printf '1\n' ;;
+    dead-shell) printf '2\n' ;;
     *) printf '0\n' ;;
+  esac
+}
+# The pane's foreground command, which is how fm_tmux_composer_identity answers
+# for agy once the real binary is up and how it answers for nothing once the
+# process is gone.
+fake_current_command() {
+  case "$state" in
+    running) printf 'agy\n' ;;
+    *) printf 'bash\n' ;;
   esac
 }
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "$FM_FAKE_PANE_PATH"; exit 0 ;;
   *"#{cursor_y}"*) fake_cursor_y; exit 0 ;;
+  *"#{pane_current_command}"*) fake_current_command; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -183,6 +205,7 @@ run_spawn() {
     FM_FAKE_AGY_TRUST_ROWS="${FM_FAKE_AGY_TRUST_ROWS:-}" \
     FM_FAKE_AGY_FIRST_SCREEN="${FM_FAKE_AGY_FIRST_SCREEN:-trust}" \
     FM_FAKE_AGY_PENDING_SCREEN="$AGY_PRELAUNCH_SCREEN" \
+    FM_FAKE_AGY_DEAD_SCREEN="$AGY_DEAD_SHELL_SCREEN" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_AGY_TRUST_POLLS="${FM_AGY_TRUST_POLLS:-3}" FM_AGY_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
@@ -314,6 +337,54 @@ test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown() {
   [ "$(cat "$CASE_DIR/agy.state")" = running ] \
     || fail "the late trust dialog was never cleared"
   pass "fm-spawn: agy's trust wait survives a pending pre-launch screen and clears the late dialog"
+}
+
+# `empty` is NOT proof agy started: the classifier's bare-glyph path reaches it
+# with no identity probe, so a pane whose agy died and whose shell redrew a bare
+# prompt reads `empty` on its own. agy's own rendered footer is the half a shell
+# cannot forge, so the gate needs both.
+test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
+  local id rec caps verdict keys captures
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-composer-lib.sh"
+  caps=$(printf 'styled=1\ncursor=1\nidentity=1\nrows=0\n')
+  verdict=$(fm_composer_classify_screen "$caps" "$AGY_DEAD_SHELL_SCREEN" 2 probe-absent)
+  [ "$verdict" = empty ] \
+    || fail "this case needs a dead-shell screen the classifier reads empty, got '$verdict'"
+  ! fm_agy_footer_present "$AGY_DEAD_SHELL_SCREEN" \
+    || fail "a dead shell was credited with agy's own footer"
+  fm_agy_footer_present "$(agy_screen '' '? for shortcuts')" \
+    || fail "agy's idle footer was not recognized as agy's own"
+  fm_agy_footer_present "$(agy_screen '' 'esc to cancel')" \
+    || fail "agy's busy footer was not recognized as agy's own"
+
+  id=agy-dead-shell-z2d
+  rec=$(make_spawn_case dead-shell "$id")
+  read_spawn_record "$rec"
+  FM_FAKE_AGY_FIRST_SCREEN=dead-shell FM_AGY_TRUST_POLLS=8 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
+    || fail "agy spawn should succeed when the dialog renders after a failed-looking start"
+  keys=$(post_launch_enters "$CASE_DIR")
+  [ "$keys" -eq 2 ] \
+    || fail "a dead shell reading empty ended the trust wait early (got $keys Enters)"
+  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
+    || fail "the trust dialog after a dead-looking screen was never cleared"
+
+  # And the gate must still FIRE on a real agy pane, or every spawn would just
+  # burn its whole poll budget. A live agy foreground process plus agy's own
+  # footer ends the wait long before the 20-poll budget is spent.
+  id=agy-started-z2e
+  rec=$(make_spawn_case started "$id")
+  read_spawn_record "$rec"
+  FM_FAKE_AGY_FIRST_SCREEN=running FM_AGY_TRUST_POLLS=20 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
+    || fail "agy spawn should succeed when agy comes up with no trust dialog"
+  keys=$(post_launch_enters "$CASE_DIR")
+  [ "$keys" -eq 1 ] || fail "agy spawn typed into a pane showing no trust dialog (got $keys)"
+  captures=$(grep -c '^capture-pane' "$CASE_DIR/tmux-calls.log")
+  [ "$captures" -lt 20 ] \
+    || fail "a started agy did not satisfy the trust-wait gate; the poll ran on ($captures captures)"
+  pass "fm-spawn: agy's trust wait rejects an empty-reading dead shell and stops on a real agy pane"
 }
 
 test_agy_secondmate_is_refused() {
@@ -737,6 +808,7 @@ test_agy_tmux_liveness_classifies_the_agent() {
 test_agy_launch_shape_and_wiring
 test_agy_trust_dialog_is_accepted_only_when_preselected
 test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown
+test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty
 test_agy_secondmate_is_refused
 test_agy_missing_binary_refuses_before_pane_creation
 test_agy_teardown_removes_pointer_and_registry_token

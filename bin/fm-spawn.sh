@@ -2295,15 +2295,17 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
 # dialog accepted, or no dialog within the window - and 1 only when a dialog IS
 # showing but with something other than the trusting option selected.
 #
-# The early exit takes POSITIVE proof that agy itself is on screen, never the
-# mere absence of `unknown`. Only `empty` is that proof: the separated shape
-# reaches `empty` solely through fm_tmux_composer_identity, which answers when a
-# live agy process holds the pane FOREGROUND, so the pre-launch shell screen
-# cannot produce it. `pending` and `pending-unproven` can - the captain's own
-# `❯` prompt row carrying the launch command is a bare-glyph composer candidate
-# with agy's startup output wrapping below it - so they keep the poll running.
-# Believing them would leave the dialog rendering with nobody to accept it and
-# the spawn reporting success on a worker wedged forever.
+# The early exit takes POSITIVE proof that agy itself painted the pane, never
+# the mere absence of `unknown`. No composer verdict alone is that proof.
+# `pending` is what the captain's own `❯` prompt row reads as while it still
+# carries the launch command with agy's startup output wrapping below it, and
+# `empty` is what the SAME row reads as once agy has died and the shell has
+# redrawn a bare prompt - the classifier's bare-glyph path answers `empty` with
+# no identity probe at all. Believing either would leave the dialog rendering
+# with nobody to accept it and the spawn reporting success on a wedged or dead
+# pane. So the gate wants both halves: the composer verdict `empty`, which is
+# cursor-anchored and structural, AND agy's own rendered footer on the same
+# capture (bin/fm-composer-lib.sh owns that signature), which no shell emits.
 agy_clear_trust_dialog() {
   local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
   while [ "$i" -lt "$max" ]; do
@@ -2315,8 +2317,10 @@ agy_clear_trust_dialog() {
     if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
       return 1
     fi
-    # A proven-empty agy composer means agy is past startup, so no dialog is coming.
-    [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" != empty ] || return 0
+    if fm_agy_footer_present "$pane" \
+       && [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]; then
+      return 0
+    fi
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"
   done
