@@ -1833,7 +1833,7 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     exit 1
   fi
   if [ -d "$STATE" ]; then
-    local meta other_id claimed_wt claimed_wt_real
+    local meta other_id other_backend other_target other_state claimed_wt claimed_wt_real
     for meta in "$STATE"/*.meta; do
       [ -f "$meta" ] && [ ! -L "$meta" ] || continue
       other_id=$(basename "$meta" .meta)
@@ -1842,8 +1842,15 @@ validate_spawn_worktree() {  # <source> <inspect-target>
       [ -n "$claimed_wt" ] || continue
       claimed_wt_real=$(cd "$claimed_wt" 2>/dev/null && pwd -P || true)
       if [ -n "$claimed_wt_real" ] && [ "$claimed_wt_real" = "$wt_real" ]; then
-        echo "error: $source yielded worktree '$WT' which is already claimed by task '$other_id'; refusing to allocate a claimed slot" >&2
-        exit 1
+        other_backend=$(fm_backend_of_meta "$meta")
+        other_target=$(fm_backend_target_of_meta "$meta")
+        other_state=$(fm_backend_agent_state "$other_backend" "$other_target" 2>/dev/null || printf 'unreadable')
+        case "$other_state" in
+          alive|live)
+            echo "error: $source yielded worktree '$WT' which is already claimed by live task '$other_id'; refusing to allocate a claimed slot" >&2
+            exit 1
+            ;;
+        esac
       fi
     done
   fi

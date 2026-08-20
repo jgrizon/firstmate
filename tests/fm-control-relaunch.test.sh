@@ -1330,7 +1330,7 @@ test_spawn_refuses_worktree_claimed_by_another_live_task_metadata() {
   printf '%s' "$dir/wt" > "$dir/fake/cwd"
   out=$(run_spawn "$dir" t2 "$dir/proj" --backend tmux --harness claude --mode direct-PR --yolo off); rc=$?
   expect_code 1 "$rc" "spawning into a worktree claimed by another task's metadata should refuse"
-  assert_contains "$out" "already claimed by task 't1'" "the refusal should name the claiming task"
+  assert_contains "$out" "already claimed by live task 't1'" "the refusal should name the claiming task"
   pass "fm-spawn: refuses to allocate a worktree claimed by another live task's metadata"
 }
 
