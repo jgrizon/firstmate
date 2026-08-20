@@ -48,7 +48,14 @@ TARGET="$SESSION:agy"
 AGY_VERSION=$("$AGY_BIN" --version 2>&1 | head -1)
 CONFIG_DIR="$HOME/.gemini/config"
 [ -d "$CONFIG_DIR" ] || fail "agy config directory is absent at $CONFIG_DIR"
-LAB=$(fm_test_tmproot fm-agy-signals)
+# Resolved, not raw: on macOS $TMPDIR ends in a slash, so fm_test_tmproot
+# hands back a path carrying a redundant `//`, and agy's folder-trust check
+# does not match such a path against the session it just opened - the dialog
+# renders even with --add-dir. bin/fm-spawn.sh always passes a resolved
+# worktree (tmux's pane_current_path), so a raw lab path would fail this file
+# on a shape production never produces.
+LAB=$(cd "$(fm_test_tmproot fm-agy-signals)" && pwd -P) \
+  || fail "could not resolve the scratch lab directory"
 STATE="$LAB/state"
 mkdir -p "$STATE" "$LAB/registered" "$LAB/outsider"
 
