@@ -23,12 +23,19 @@
 #                 has to run. The path is written ABSOLUTE: agy's documented
 #                 "~/" home-relative form is accepted but not resolved in the
 #                 global config (verified, agy 1.1.15), so a tilde entry loads
-#                 nothing at all.
+#                 nothing at all. A missing root is skipped rather than refused,
+#                 because a scout never needs the skill and refusing would block
+#                 agy entirely wherever the captain's skills live only under
+#                 ~/.claude/skills. The skip is NOT silent: install names the
+#                 absent root on stderr and says what it costs, so a spawn that
+#                 wanted no-mistakes mode says so up front instead of failing
+#                 confusingly mid-task.
 #
 # Usage:
 #   fm-agy-config.sh install [<skills-root>]
 #   fm-agy-config.sh remove [<skills-root>]
-#   <skills-root> defaults to $HOME/.agents/skills and is skipped when absent.
+#   <skills-root> defaults to $HOME/.agents/skills; an absent root is skipped
+#   with a warning on stderr and install still exits 0.
 #
 # FM_AGY_CONFIG_DIR overrides the config directory, defaulting to
 # $HOME/.gemini/config. It is FIRSTMATE's own knob for test isolation, not a
@@ -43,7 +50,7 @@ set -u
 case "${1:-}" in
   install|remove) ACTION=$1 ;;
   -h|--help)
-    sed -n '2,41{s/^# \{0,1\}//;p;}' "$0"
+    sed -n '2,${/^#/!q;s/^# \{0,1\}//;p;}' "$0"
     exit 0
     ;;
   *)
@@ -246,7 +253,14 @@ try:
         # The skills entry is additive and idempotent: an entry the captain
         # already wrote for the same root is left exactly as it is, including
         # any include_only/exclude filters they chose.
-        if os.path.isdir(SKILLS_ROOT):
+        if not os.path.isdir(SKILLS_ROOT):
+            print(
+                "fm-agy-config: warning: skipped the agy skills declaration: no "
+                f"skills root at {SKILLS_ROOT}. An agy crewmate started now cannot "
+                "see the no-mistakes skill.",
+                file=sys.stderr,
+            )
+        else:
             entries = skills.get("entries")
             if entries is None:
                 entries = []

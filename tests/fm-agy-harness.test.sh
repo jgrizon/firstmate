@@ -37,6 +37,16 @@ agy_screen() {  # <composer-text> <footer> [task-strip]
   printf '%s                       Gemini 3.7 Flash · low\n' "$2"
 }
 
+# The pane's pre-launch screen: the captain's own `❯` prompt row still carrying
+# the typed launch command, with agy's startup output wrapping below it. The
+# shared classifier reads this as `pending` on its own (asserted below) although
+# agy has drawn nothing yet, which is why the trust wait cannot treat anything
+# other than a proven-empty composer as proof agy started.
+AGY_PRELAUNCH_SCREEN=$(printf '%s\n' \
+  '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"' \
+  'Antigravity CLI 1.1.15' \
+  'loading workspace...')
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -58,6 +68,15 @@ fake_screen() {
     running)
       rule; printf '> \n'; rule
       printf '? for shortcuts                  Gemini 3.7 Flash · low\n'
+      ;;
+    pending)
+      # The pane BEFORE agy has drawn anything, held for a few captures so the
+      # trust wait has to survive it. The dialog renders afterwards.
+      printf '%s\n' "$FM_FAKE_AGY_PENDING_SCREEN"
+      printf 'x' >> "$FM_FAKE_AGY_STATE.pending"
+      if [ "$(wc -c < "$FM_FAKE_AGY_STATE.pending" | tr -d ' ')" -ge 4 ]; then
+        printf 'trust\n' > "$FM_FAKE_AGY_STATE"
+      fi
       ;;
     *) printf 'shell starting\n$ \n' ;;
   esac
@@ -163,8 +182,9 @@ run_spawn() {
     FM_FAKE_AGY_STATE="$case_dir/agy.state" \
     FM_FAKE_AGY_TRUST_ROWS="${FM_FAKE_AGY_TRUST_ROWS:-}" \
     FM_FAKE_AGY_FIRST_SCREEN="${FM_FAKE_AGY_FIRST_SCREEN:-trust}" \
+    FM_FAKE_AGY_PENDING_SCREEN="$AGY_PRELAUNCH_SCREEN" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
-    FM_AGY_TRUST_POLLS=3 FM_AGY_POLL_INTERVAL=0 \
+    FM_AGY_TRUST_POLLS="${FM_AGY_TRUST_POLLS:-3}" FM_AGY_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
     "$SPAWN" "$id" "$proj" --scout --harness agy "$@" 2>&1
 }
@@ -266,6 +286,34 @@ test_agy_trust_dialog_is_accepted_only_when_preselected() {
   [ "$rc" -ne 0 ] || fail "agy spawn accepted a trust dialog whose selection was not the trusting one"
   assert_contains "$out" "unexpected selection" "agy trust refusal lacked its concrete reason"
   pass "fm-spawn: agy accepts its trust dialog only with the trusting option preselected"
+}
+
+# A composer verdict of `pending` is reachable from the pane BEFORE agy has
+# drawn anything, so it is not proof agy started. Only `empty` is: the separated
+# shape reaches it solely through a live agy process holding the pane
+# foreground. A wait that stopped on `pending` would leave the dialog rendering
+# with nobody to accept it and report the spawn as a success.
+test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown() {
+  local id rec caps verdict keys
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-composer-lib.sh"
+  caps=$(printf 'styled=1\ncursor=1\nidentity=1\nrows=0\n')
+  verdict=$(fm_composer_classify_screen "$caps" "$AGY_PRELAUNCH_SCREEN" 0)
+  [ "$verdict" = pending ] \
+    || fail "this case needs a pre-launch screen that classifies pending, got '$verdict'"
+
+  id=agy-trust-late-z2c
+  rec=$(make_spawn_case trust-late "$id")
+  read_spawn_record "$rec"
+  FM_FAKE_AGY_FIRST_SCREEN=pending FM_AGY_TRUST_POLLS=8 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
+    || fail "agy spawn should succeed when the trust dialog renders after a slow start"
+  keys=$(post_launch_enters "$CASE_DIR")
+  [ "$keys" -eq 2 ] \
+    || fail "a pending pre-launch screen ended the trust wait early (got $keys Enters)"
+  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
+    || fail "the late trust dialog was never cleared"
+  pass "fm-spawn: agy's trust wait survives a pending pre-launch screen and clears the late dialog"
 }
 
 test_agy_secondmate_is_refused() {
@@ -427,7 +475,7 @@ test_agy_hook_requires_a_registered_workspace_token() {
   config_dir="$dir/gemini/config"
   mkdir -p "$config_dir" "$dir/registered" "$dir/outsider" "$dir/state"
   HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" "$AGY_CONFIG" install "$dir/absent-skills" \
-    || fail "agy config install failed"
+    2>/dev/null || fail "agy config install failed"
   hook="$config_dir/fm-agy-turn-end.sh"
   registry="$config_dir/fm-agy-turn-end.d"
   state="$dir/state"
@@ -478,6 +526,53 @@ test_agy_hook_requires_a_registered_workspace_token() {
     || fail "the agy hook must always exit zero"
   assert_absent "$turnend" "an empty workspacePaths payload fired the turn-end marker"
   pass "the agy global hook fires only for a registered workspace token and only when fully idle"
+}
+
+# The skills declaration is the whole reason a crewmate can run no-mistakes at
+# all, and it is legitimately skipped when the user-level root does not exist.
+# What must never happen is skipping it in silence.
+test_agy_config_reports_a_skipped_skills_root() {
+  local dir out id rec
+  dir="$TMP_ROOT/skills-missing"
+  mkdir -p "$dir/gemini/config"
+  out=$(HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+    "$AGY_CONFIG" install "$dir/absent-skills" 2>&1 >/dev/null) \
+    || fail "a missing skills root must not fail the install"
+  assert_contains "$out" "$dir/absent-skills" "the skipped skills declaration did not name the root"
+  assert_contains "$out" "no-mistakes" "the skipped skills warning did not say what it costs"
+  assert_absent "$dir/gemini/config/skills.json" "a missing skills root still wrote skills.json"
+  assert_present "$dir/gemini/config/fm-agy-turn-end.sh" \
+    "the skipped skills declaration also skipped the hook half of the install"
+
+  mkdir -p "$dir/real-skills"
+  out=$(HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+    "$AGY_CONFIG" install "$dir/real-skills" 2>&1 >/dev/null) \
+    || fail "install with a present skills root failed"
+  [ -z "$out" ] || fail "install warned about a skills root that exists: $out"
+
+  # And fm-spawn must not swallow it: these homes have no ~/.agents/skills.
+  id=agy-skills-warn-z5b
+  rec=$(make_spawn_case skills-warn "$id")
+  read_spawn_record "$rec"
+  out=$(run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") \
+    || fail "agy spawn should still succeed with no user skills root"
+  assert_contains "$out" "skipped the agy skills declaration" \
+    "fm-spawn swallowed the warning that its agy crewmate cannot see no-mistakes"
+  pass "fm-agy-config names a skipped skills root, and fm-spawn passes that warning through"
+}
+
+# --help is the script's own generated output contract: its header prose and
+# nothing past it.
+test_agy_config_help_stops_at_the_end_of_its_header() {
+  local out
+  out=$("$AGY_CONFIG" --help) || fail "fm-agy-config.sh --help exited non-zero"
+  assert_contains "$out" "Install or remove Firstmate's global Antigravity CLI" \
+    "--help did not print its header prose"
+  assert_contains "$out" "fm-agy-config.sh install" "--help did not print its usage"
+  if printf '%s\n' "$out" | grep -qE '^(set -u|#!)'; then
+    fail "--help printed shell source from past the end of the header block"
+  fi
+  pass "fm-agy-config.sh --help prints its header prose and stops there"
 }
 
 test_agy_busy_source_is_scoped_to_agy() {
@@ -641,12 +736,15 @@ test_agy_tmux_liveness_classifies_the_agent() {
 
 test_agy_launch_shape_and_wiring
 test_agy_trust_dialog_is_accepted_only_when_preselected
+test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown
 test_agy_secondmate_is_refused
 test_agy_missing_binary_refuses_before_pane_creation
 test_agy_teardown_removes_pointer_and_registry_token
 test_agy_global_config_edit_is_surgical_idempotent_and_removable
 test_agy_global_config_fails_closed_on_unsafe_shared_files
 test_agy_hook_requires_a_registered_workspace_token
+test_agy_config_reports_a_skipped_skills_root
+test_agy_config_help_stops_at_the_end_of_its_header
 test_agy_busy_source_is_scoped_to_agy
 test_agy_separated_composer_is_classified
 test_agy_glyph_strip_does_not_reach_pi

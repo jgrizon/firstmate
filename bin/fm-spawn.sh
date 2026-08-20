@@ -1155,7 +1155,7 @@ launch_template() {
     # inherited CLAUDECODE cannot outrank cursor's own marker in a process that
     # only reads the environment. Cursor exposes no effort flag, so the shared
     # effort axis is deliberately omitted and stays in task metadata only.
-    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    cursor) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u ANTIGRAVITY_AGENT -u CURSOR_INVOKED_AS __CURSORBIN__ --trust --yolo __MODELFLAG__--workspace __WORKTREE__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # Kimi Code rejects a positional prompt, so it launches bare and receives
     # only an absolute brief pointer after the TUI readiness gate below.
     # Its turn-end signal is a globally configured Stop hook plus a guarded
@@ -1182,7 +1182,7 @@ launch_template() {
     # session event log instead (bin/fm-busy-lib.sh), bound by the sidecar
     # written below. Nothing to place in the template for it.
     # codex, opencode, and kimi are also markerless and share this inherited-marker hazard; changing their verified launch boundaries belongs in follow-up work.
-    muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u ANTIGRAVITY_AGENT XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # agy (Antigravity CLI). -i / --prompt-interactive runs the initial prompt AND
     # keeps the session interactive, which is the supervised pane firstmate needs;
     # -p / --print is headless and would exit after one turn, so it is never used.
@@ -1508,6 +1508,10 @@ case "$LAUNCH" in
     # crewmate could not see the no-mistakes skill at all (agy scans neither
     # ~/.claude/skills nor ~/.agents/skills on its own). bin/fm-agy-config.sh
     # owns the surgical edits and refuses rather than damaging a shared config.
+    # Its stderr is deliberately NOT redirected: a missing user skills root is a
+    # permitted skip that install reports there, and swallowing it would hide
+    # the one warning explaining a crewmate that later says it cannot find
+    # no-mistakes.
     "$FM_ROOT/bin/fm-agy-config.sh" install || {
       echo "error: refusing agy spawn because its global hook and skills wiring could not be installed safely" >&2
       exit 1
@@ -2290,6 +2294,16 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
 # Clear the trust dialog if one appears. Returns 0 when the pane is usable -
 # dialog accepted, or no dialog within the window - and 1 only when a dialog IS
 # showing but with something other than the trusting option selected.
+#
+# The early exit takes POSITIVE proof that agy itself is on screen, never the
+# mere absence of `unknown`. Only `empty` is that proof: the separated shape
+# reaches `empty` solely through fm_tmux_composer_identity, which answers when a
+# live agy process holds the pane FOREGROUND, so the pre-launch shell screen
+# cannot produce it. `pending` and `pending-unproven` can - the captain's own
+# `❯` prompt row carrying the launch command is a bare-glyph composer candidate
+# with agy's startup output wrapping below it - so they keep the poll running.
+# Believing them would leave the dialog rendering with nobody to accept it and
+# the spawn reporting success on a worker wedged forever.
 agy_clear_trust_dialog() {
   local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
   while [ "$i" -lt "$max" ]; do
@@ -2301,8 +2315,8 @@ agy_clear_trust_dialog() {
     if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
       return 1
     fi
-    # A composer means agy is past startup, so no dialog is coming.
-    [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = unknown ] || return 0
+    # A proven-empty agy composer means agy is past startup, so no dialog is coming.
+    [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" != empty ] || return 0
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"
   done
@@ -2870,10 +2884,18 @@ esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 case "$HARNESS" in
   claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
+    # ANTIGRAVITY_AGENT is retired here for the same reason cursor's markers
+    # are: bin/fm-harness.sh reads it as a layer-1 verdict AHEAD of ancestry, so
+    # an inherited copy (fm-spawn run from inside an agy pane, starting the
+    # multiplexer daemon that then holds it for every later pane) would make a
+    # markerless codex/opencode/kimi/muse worker report `agy` and route it to
+    # the wrong busy source, interrupt mechanics, and supervision model.
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u ANTIGRAVITY_AGENT $LAUNCH"
     ;;
   # agy's own template already opens with a full env -u of every foreign
   # primary marker, including cursor's, so a second prefix would be redundant.
+  # It deliberately keeps ANTIGRAVITY_AGENT: agy sets that marker itself, for
+  # its own children.
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
