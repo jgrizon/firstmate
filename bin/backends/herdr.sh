@@ -1776,15 +1776,20 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd> [<launcher-relationship
     printf '%s' "$wsid"
     return 0
   fi
-  local create_args=(workspace create --cwd "$cwd" --label "$label" --no-focus)
-  # A firstmate worker space, once auto-close is available, opts into
-  # closing itself when its last tab goes - so a finished worker's teardown
-  # (which closes only its own pane, never the space; see
-  # fm_backend_herdr_kill) stops leaving an empty space behind. On a herdr
-  # built before this landed, --auto-close is simply omitted and the space
-  # keeps today's survive-when-empty behavior.
-  fm_backend_herdr_workspace_autoclose_capable && create_args+=(--auto-close)
-  out=$(fm_backend_herdr_cli "$session" "${create_args[@]}" 2>/dev/null) || return 1
+  # A firstmate worker space opts into closing itself when its last tab goes
+  # (Herdr #22's `--auto-close`) - so a finished worker's teardown (which
+  # closes only its own pane, never the space; see fm_backend_herdr_kill)
+  # stops leaving an empty space behind. Attempt-and-fall-back rather than
+  # a capability probe: a herdr built before #22 rejects the unknown flag as
+  # a clean argument-parse error before creating anything (verified against
+  # the real binary - no partial workspace is left to clean up), so the
+  # retry below without --auto-close is what keeps spawning working there,
+  # with no version string or schema call to get wrong.
+  if out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$label" --no-focus --auto-close 2>/dev/null); then
+    :
+  else
+    out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
+  fi
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   [ -n "$wsid" ] || return 1
   FM_BACKEND_HERDR_WS_ID=$wsid
@@ -3188,24 +3193,6 @@ fm_backend_herdr_events_capable() {  # <session>
   printf '%s' "$schema" | grep -Fq 'events.subscribe' || return 1
   printf '%s' "$schema" | grep -Fq 'pane.agent_status_changed' || return 1
   return 0
-}
-
-# fm_backend_herdr_workspace_autoclose_capable: whether this herdr's
-# `workspace create` accepts `--auto-close` (Herdr #22: adds an `auto_close`
-# field to `WorkspaceCreateParams`). Same structural signal as
-# fm_backend_herdr_events_capable - grep the live `api schema` for the field
-# name rather than trust a version string, because the schema is what the
-# CLI itself will actually accept. FM_BACKEND_HERDR_AUTOCLOSE_FORCE overrides
-# the verdict for tests (1 = capable, 0 = incapable) without touching the
-# real binary.
-fm_backend_herdr_workspace_autoclose_capable() {
-  local schema
-  case "${FM_BACKEND_HERDR_AUTOCLOSE_FORCE:-}" in
-    1) return 0 ;;
-    0) return 1 ;;
-  esac
-  schema=$(herdr api schema --json 2>/dev/null) || return 1
-  printf '%s' "$schema" | grep -Fq '"auto_close"'
 }
 
 # fm_backend_herdr_normalize_event: THE single normalize point (report section 5

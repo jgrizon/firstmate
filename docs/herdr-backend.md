@@ -69,8 +69,9 @@ Closing its last tab can remove the workspace, and the next spawn recreates it.
 
 Herdr 0.8's default changed so a workspace survives its own last tab closing instead of being removed with it, so an operator's own space stays put when they close their last pane in it.
 That default is correct for a human's space but leaves an empty, permanent space behind for every worker Firstmate tears down, because teardown closes only the worker's pane and never calls `workspace close`.
-On a Herdr build whose live `api schema` advertises `WorkspaceCreateParams.auto_close` (Herdr #22), the adapter creates each worker's own new workspace with `--auto-close`, opting it back into closing itself once empty; an adopted (already-existing) workspace is left exactly as it is.
-An older Herdr without that schema field omits the flag and keeps today's survive-when-empty behavior; nothing about spawning fails or degrades for that reason.
+The adapter attempts each worker's own new workspace create with `--auto-close` (Herdr #22), opting it back into closing itself once empty; an adopted (already-existing) workspace is left exactly as it is.
+A Herdr build without that flag rejects it as a clean argument-parse error before creating anything, so the adapter retries once without `--auto-close` and keeps today's survive-when-empty behavior; nothing about spawning fails or degrades for that reason.
+This is an attempt-and-fall-back, not a version or schema probe, so it needs no capability query scoped to the right session.
 This never touches the presentation-space or default-tab-prune paths below, and it is unrelated to the `workspace close` prohibition in [Default-tab prune safety](#default-tab-prune-safety) - only the workspace's own last-tab removal, driven by Herdr itself, is affected.
 
 ## Presentation spaces

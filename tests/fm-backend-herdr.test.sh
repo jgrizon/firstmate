@@ -24,10 +24,6 @@ herdr_forget_inherited_pane
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-herdr-tests)
 export FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0
-# Default every test below to a pre-#22 herdr (no auto-close support) so the
-# canned sequential responses in the existing container_ensure/create_task
-# cases are unaffected; the auto-close-specific tests override this per call.
-export FM_BACKEND_HERDR_AUTOCLOSE_FORCE=0
 
 # make_herdr_fakebin: a `herdr` stub that logs every invocation (one line,
 # unit-separated args, to $FM_HERDR_LOG) and returns the canned response for
@@ -801,53 +797,55 @@ test_container_ensure_creates_with_no_focus_flag() {
   [ "$out" = $'fmtest:w1\tw1:t1' ] || fail "container_ensure should still echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate'$'\x1f''--no-focus' \
     "container_ensure's workspace create did not pass --no-focus (focus-safety: never steal the captain's attention on spawn)"
-  assert_not_contains "$(cat "$log")" $'\x1f''--auto-close' \
-    "REGRESSION: container_ensure passed --auto-close against a pre-#22 herdr (FM_BACKEND_HERDR_AUTOCLOSE_FORCE=0); spawning must degrade to today's flag-less workspace create, not fail or guess"
-  pass "fm_backend_herdr_container_ensure: workspace create passes --no-focus, and omits --auto-close on a herdr that does not support it"
+  pass "fm_backend_herdr_container_ensure: workspace create passes --no-focus"
 }
 
-# --- container_ensure: auto-close capability -------------------------------
+# --- container_ensure: --auto-close attempt-and-fall-back -------------------
+# fm_backend_herdr_workspace_ensure always ATTEMPTS `workspace create` with
+# --auto-close first; a herdr that rejects the unknown flag fails the call
+# with a clean argument-parse error before creating anything (verified
+# against the real 0.8.0 binary), so the adapter retries once without the
+# flag. No capability probe, no version or schema call - fakebin call N's
+# scripted "$N.exit" lets a test force exactly that rejection.
 
-test_workspace_autoclose_capable_true_when_schema_has_auto_close() {
-  local dir log resp fb status
-  dir="$TMP_ROOT/autoclose-capable-true"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"components":{"schemas":{"WorkspaceCreateParams":{"properties":{"auto_close":{"type":"boolean"}}}}}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_AUTOCLOSE_FORCE='' \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_autoclose_capable' "$ROOT"
-  status=$?
-  expect_code 0 "$status" "autoclose_capable should return 0 when the live schema advertises auto_close"
-  assert_contains "$(cat "$log")" $'\x1f''api'$'\x1f''schema'$'\x1f''--json' \
-    "autoclose_capable did not read the live 'herdr api schema' to detect support"
-  pass "fm_backend_herdr_workspace_autoclose_capable: capable when the live schema advertises auto_close (Herdr #22)"
-}
-
-test_workspace_autoclose_capable_false_when_schema_lacks_auto_close() {
-  local dir log resp fb status
-  dir="$TMP_ROOT/autoclose-capable-false"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '{"components":{"schemas":{"WorkspaceCreateParams":{"properties":{"cwd":{"type":"string"}}}}}}\n' > "$resp/1.out"
-  fb=$(make_herdr_fakebin "$dir")
-  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_BACKEND_HERDR_AUTOCLOSE_FORCE='' \
-    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_workspace_autoclose_capable' "$ROOT"
-  status=$?
-  expect_code 1 "$status" "autoclose_capable should return 1 (incapable) on a pre-#22 schema with no auto_close field"
-  pass "fm_backend_herdr_workspace_autoclose_capable: incapable on an older herdr's schema, no version string parsed"
-}
-
-test_container_ensure_creates_with_auto_close_flag_when_capable() {
-  local dir log resp fb out
-  dir="$TMP_ROOT/container-auto-close-capable"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+test_container_ensure_creates_with_auto_close_flag_on_first_attempt() {
+  local dir log resp fb out count
+  dir="$TMP_ROOT/container-auto-close-first-try"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
   printf '{"server":{"running":true}}\n' > "$resp/2.out"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
   printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest FM_BACKEND_HERDR_AUTOCLOSE_FORCE=1 \
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
-  [ "$out" = $'fmtest:w1\tw1:t1' ] || fail "container_ensure should still echo '<session>:<workspace_id>\\t<seeded_default_tab_id>' when auto-close is capable, got '$out'"
+  [ "$out" = $'fmtest:w1\tw1:t1' ] || fail "container_ensure should still echo '<session>:<workspace_id>\\t<seeded_default_tab_id>', got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''firstmate'$'\x1f''--no-focus'$'\x1f''--auto-close' \
-    "container_ensure's workspace create did not pass --auto-close on a herdr whose schema supports it"
-  pass "fm_backend_herdr_container_ensure: passes --auto-close on a herdr whose schema supports it"
+    "container_ensure's workspace create did not attempt --auto-close first"
+  count=$(grep -c $'\x1f''workspace'$'\x1f''create'$'\x1f' "$log")
+  [ "$count" = 1 ] || fail "container_ensure should not retry workspace create when the first --auto-close attempt succeeds, got $count call(s)"
+  pass "fm_backend_herdr_container_ensure: creates the workspace with --auto-close on the first attempt, no retry needed"
+}
+
+test_container_ensure_retries_without_auto_close_when_rejected() {
+  local dir log resp fb out count last
+  dir="$TMP_ROOT/container-auto-close-rejected"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
+  printf '{"server":{"running":true}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
+  # Call 4 is the first workspace create attempt (--auto-close): script it to
+  # fail exactly like an older herdr's argument parser - non-zero exit, no
+  # stdout, nothing created - so the code under test must fall back to call 5.
+  printf '2\n' > "$resp/4.exit"
+  printf '{"result":{"workspace":{"workspace_id":"w1","label":"firstmate"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' > "$resp/5.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
+  [ "$out" = $'fmtest:w1\tw1:t1' ] || fail "container_ensure should still succeed via the flag-less retry when --auto-close is rejected, got '$out'"
+  count=$(grep -c $'\x1f''workspace'$'\x1f''create'$'\x1f' "$log")
+  [ "$count" = 2 ] || fail "container_ensure should retry workspace create exactly once after an --auto-close rejection, got $count call(s)"
+  last=$(grep $'\x1f''workspace'$'\x1f''create'$'\x1f' "$log" | tail -1)
+  case "$last" in *$'\x1f''--auto-close'*) fail "the retry call still carried --auto-close: $last" ;; esac
+  pass "fm_backend_herdr_container_ensure: retries workspace create without --auto-close exactly once when an older herdr rejects it, and spawning still succeeds"
 }
 
 test_container_ensure_uses_secondmate_home_label() {
@@ -4476,9 +4474,8 @@ test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
 test_container_ensure_reuses_existing_workspace
 test_container_ensure_creates_with_no_focus_flag
-test_workspace_autoclose_capable_true_when_schema_has_auto_close
-test_workspace_autoclose_capable_false_when_schema_lacks_auto_close
-test_container_ensure_creates_with_auto_close_flag_when_capable
+test_container_ensure_creates_with_auto_close_flag_on_first_attempt
+test_container_ensure_retries_without_auto_close_when_rejected
 test_container_ensure_uses_secondmate_home_label
 test_workspace_ensure_prunes_default_tab
 test_repeated_cycles_reuse_one_workspace_no_orphans
