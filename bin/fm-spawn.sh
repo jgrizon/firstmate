@@ -2300,9 +2300,11 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
 # agy writes the question first and the options a moment later, so this is what
 # separates "the choices were reordered" - judgeable, and a refusal - from
 # "the choices are not on screen yet", which is just a frame to wait through.
-# Deliberately not tied to either option's wording: a release that RENAMES them
-# leaves the marker unmatched, which defers to the poll budget and still
-# refuses, rather than silently reading a rename as the trusting choice.
+# Deliberately not tied to either option's wording: a release that RENAMES the
+# trusting option still draws a marker, so this reports the frame judgeable,
+# agy_trust_dialog_ready fails on the unrecognized text, and the spawn refuses
+# on that first drawn frame. Loud and immediate is the right outcome there -
+# firstmate must never read a rename as consent.
 agy_trust_selection_drawn() {  # <plain-pane-capture>
   printf '%s\n' "$1" | grep -Eq '^[[:space:]]*>[[:space:]]+[^[:space:]]'
 }

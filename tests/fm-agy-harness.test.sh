@@ -40,8 +40,8 @@ agy_screen() {  # <composer-text> <footer> [task-strip]
 # The pane's pre-launch screen: the captain's own `❯` prompt row still carrying
 # the typed launch command, with agy's startup output wrapping below it. The
 # shared classifier reads this as `pending` on its own (asserted below) although
-# agy has drawn nothing yet, which is why the trust wait cannot treat anything
-# other than a proven-empty composer as proof agy started.
+# agy has drawn nothing yet. The shipped gate accepts no composer verdict at
+# all - agy's own rendered footer is the whole of it - and this screen has none.
 AGY_PRELAUNCH_SCREEN=$(printf '%s\n' \
   '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"' \
   'Antigravity CLI 1.1.15' \
@@ -56,27 +56,40 @@ AGY_DEAD_SHELL_SCREEN=$(printf '%s\n' \
   'agy: error: unknown model id' \
   '❯ ')
 
-# The same dead pane, but with a footer agy really did render still sitting in
-# SCROLLBACK above it. A capture carries history, so an unbounded footer scan
-# would read this pane as a live agy; only the live rows may count.
+# The same dead pane, with the footer agy really did render sitting directly
+# above it. Nothing pads the two apart, because nothing does in practice either:
+# agy can die two rows after its last frame. The redrawn prompt row at the
+# bottom is the whole boundary, so only the live rows may count.
 AGY_STALE_FOOTER_SCREEN=$(
   printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
-  seq 1 12 | sed 's/^/  transcript row /'
   printf '%s\n' "$AGY_DEAD_SHELL_SCREEN"
 )
 
-# A relaunch pane: the PREVIOUS incarnation's already-accepted trust dialog is
-# still in scrollback, trusting option and all, with that session's output and a
-# fresh shell prompt below it. Reading the whole capture would match those rows
-# on the first poll, fire an Enter into a pane where agy has not started, and
-# then never accept the dialog that really renders.
+# A relaunch pane, the shape `--relaunch` actually adopts: the PREVIOUS
+# incarnation's already-accepted trust dialog, trusting option and all, sitting
+# directly above the freshly typed launch command. Matching those rows on the
+# first poll would fire an Enter into a pane where the new agy has not started,
+# and the dialog that really renders a moment later would never be accepted -
+# a wedged worker reported as spawned.
+# The dialog as agy draws it while it is LIVE: the question, the explanation,
+# then the options with the trusting one marked. Its selected row begins with a
+# prompt glyph, which is why the live-rows boundary cannot be any prompt row.
+AGY_LIVE_DIALOG_SCREEN=$(
+  printf 'Accessing workspace:\n'
+  printf '/tmp/a-task-worktree\n'
+  printf 'Do you trust the contents of this project?\n'
+  printf 'Antigravity CLI requires permission to read, edit, and execute files here.\n'
+  printf '> Yes, I trust this folder\n'
+  printf '  No, exit\n'
+  printf '  ↑/↓ Navigate · enter Confirm\n'
+)
+
 AGY_STALE_DIALOG_SCREEN=$(
   printf 'Accessing workspace:\n'
   printf '/tmp/a-previous-worktree\n'
   printf 'Do you trust the contents of this project?\n'
   printf '> Yes, I trust this folder\n'
   printf '  No, exit\n'
-  seq 1 12 | sed 's/^/  transcript row /'
   printf '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"\n'
 )
 
@@ -137,8 +150,8 @@ fake_cursor_y() {
   case "$state" in
     running) printf '1\n' ;;
     dead-shell) printf '2\n' ;;
-    stale-footer) printf '15\n' ;;
-    stale-dialog) printf '17\n' ;;
+    stale-footer) printf '3\n' ;;
+    stale-dialog) printf '5\n' ;;
     half-drawn) printf '6\n' ;;
     *) printf '0\n' ;;
   esac
@@ -419,16 +432,30 @@ test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
     || fail "agy's idle footer was not recognized as agy's own"
   fm_agy_footer_present "$(agy_screen '' 'esc to cancel')" \
     || fail "agy's busy footer was not recognized as agy's own"
-  verdict=$(fm_composer_classify_screen "$caps" "$AGY_STALE_FOOTER_SCREEN" 15 probe-absent)
+  verdict=$(fm_composer_classify_screen "$caps" "$AGY_STALE_FOOTER_SCREEN" 3 probe-absent)
   [ "$verdict" = empty ] \
     || fail "the stale-footer case needs a dead pane the classifier reads empty, got '$verdict'"
   ! fm_agy_footer_present "$AGY_STALE_FOOTER_SCREEN" \
-    || fail "a footer left in scrollback was credited to a pane that is now a dead shell"
+    || fail "a footer one row above a redrawn prompt was credited to a live agy"
+
+  # The relaunch shape: the previously accepted dialog sits directly above the
+  # freshly typed launch command, so the window must end at that prompt row and
+  # neither half of the dialog test may reach the rows above it.
   printf '%s\n' "$AGY_STALE_DIALOG_SCREEN" | grep -Fq 'Do you trust the contents of this project' \
-    || fail "the stale-dialog case needs a screen whose scrollback holds a trust dialog"
+    || fail "the stale-dialog case needs a screen that really holds a trust dialog"
   fm_pane_live_rows "$AGY_STALE_DIALOG_SCREEN" \
     | grep -Fq 'Do you trust the contents of this project' \
-    && fail "the live-rows window still exposed a trust dialog the pane scrolled past"
+    && fail "the live-rows window exposed a trust dialog from above the current prompt row"
+  fm_pane_live_rows "$AGY_STALE_DIALOG_SCREEN" \
+    | grep -Eq '^[[:space:]]*>[[:space:]]+Yes, I trust this folder[[:space:]]*$' \
+    && fail "the live-rows window exposed a stale accepted option row, so an Enter would fire blind"
+
+  # And the window must not cut a dialog that IS live: agy's own selected option
+  # carries a prompt glyph, so a boundary drawn at any prompt row would hide the
+  # question above it and the dialog could never be accepted.
+  fm_pane_live_rows "$AGY_LIVE_DIALOG_SCREEN" \
+    | grep -Fq 'Do you trust the contents of this project' \
+    || fail "the live-rows window cut the question off a dialog the pane is showing now"
 
   id=agy-dead-shell-z2d
   rec=$(make_spawn_case dead-shell "$id")
