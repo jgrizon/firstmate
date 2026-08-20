@@ -350,7 +350,7 @@ PY
 }
 
 test_agy_global_config_fails_closed_on_unsafe_shared_files() {
-  local dir config_dir out rc before
+  local dir config_dir out rc
   dir="$TMP_ROOT/config-unsafe"
   config_dir="$dir/gemini/config"
   mkdir -p "$config_dir"
