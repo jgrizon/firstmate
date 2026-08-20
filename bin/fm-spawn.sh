@@ -3,9 +3,10 @@
 # secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> --lab [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
-#   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
+#   spawn and refused on --scout, --lab, and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
 #   standing posture as context, not as this task's answer, so a spawn never looks
 #   the mode up. A ship spawn additionally reads the brief's recorded
@@ -24,7 +25,7 @@
 #   transaction; call fm-control rather than this flag directly unless you are
 #   deliberately re-launching an already-stopped task. Every identity axis -
 #   backend, kind, project or home, worktree, endpoint - comes from the task's
-#   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
+#   validated state/<id>.meta, so --backend, --scout, --lab, --secondmate, a project
 #   positional, and batch pairs are all refused alongside it; only harness,
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
@@ -312,6 +313,7 @@ for a in "$@"; do
   fi
   case "$a" in
     --scout) KIND=scout; KIND_SET=1 ;;
+    --lab) KIND=lab; KIND_SET=1 ;;
     --secondmate) KIND=secondmate; KIND_SET=1 ;;
     --relaunch) RELAUNCH=1 ;;
     --harness) want_value=harness ;;
@@ -363,7 +365,7 @@ esac
 # refusal rather than a silently-ignored flag.
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "$BACKEND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2; exit 1; }
-  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
+  [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--lab/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
 else
@@ -393,11 +395,11 @@ else
     esac
   else
     [ "$MODE_SET" -eq 0 ] || {
-      echo "error: --mode applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+      echo "error: --mode applies only to ship spawns; a scout or lab delivers a report and a secondmate records its own fixed posture" >&2
       exit 1
     }
     [ "$YOLO_SET" -eq 0 ] || {
-      echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
+      echo "error: --yolo applies only to ship spawns; a scout or lab delivers a report and a secondmate records its own fixed posture" >&2
       exit 1
     }
   fi
@@ -884,6 +886,10 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       echo "error: batch dispatch does not support --secondmate; spawn each secondmate explicitly" >&2
       rc=2
       continue
+    elif [ "$KIND" = lab ]; then
+      echo "error: batch dispatch does not support --lab; spawn each lab task explicitly" >&2
+      rc=2
+      continue
     elif [ "$KIND" = scout ]; then
       if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     else
@@ -963,6 +969,10 @@ if [ "$RELAUNCH" -eq 0 ]; then
     echo "error: backend=orca does not support --secondmate spawns yet" >&2
     exit 1
   fi
+  if [ "$BACKEND" = orca ] && [ "$KIND" = lab ]; then
+    echo "error: backend=orca does not support --lab spawns; orca owns the worktree itself" >&2
+    exit 1
+  fi
   if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=cmux does not support --secondmate spawns yet" >&2
     exit 1
@@ -1027,6 +1037,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
   if [ "$KIND" = secondmate ]; then
     FIRSTMATE_HOME=$(fm_meta_get "$RELAUNCH_META" home)
     [ -n "$FIRSTMATE_HOME" ] || FIRSTMATE_HOME=$RELAUNCH_WT
+  elif [ "$KIND" = lab ]; then
+    PROJ_ABS=$RELAUNCH_WT
   else
     PROJ=$(fm_meta_get "$RELAUNCH_META" project)
     [ -n "$PROJ" ] || {
@@ -1069,7 +1081,24 @@ elif [ "$KIND" = secondmate ]; then
       ARG3=${POS[2]:-}
       ;;
   esac
+elif [ "$KIND" = lab ]; then
+  if [ "${#POS[@]}" -gt 2 ]; then
+    echo "error: --lab takes the task id only (plus optional harness positional); unexpected arguments" >&2
+    exit 1
+  fi
+  if [ "${#POS[@]}" -eq 2 ]; then
+    case "${POS[1]}" in
+      claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse|agy)
+        ARG3=${POS[1]}
+        ;;
+      *)
+        echo "error: --lab takes the task id only; a repo-less task has no project positional (got '${POS[1]}')" >&2
+        exit 1
+        ;;
+    esac
+  fi
 else
+  [ "${#POS[@]}" -ge 2 ] || { echo "error: project directory argument required for ship and scout tasks" >&2; exit 1; }
   PROJ=${POS[1]}
   ARG3=${POS[2]:-}
 fi
@@ -1709,6 +1738,11 @@ if [ "$KIND" = secondmate ]; then
   else
     BRIEF="$DATA/$ID/brief.md"
   fi
+elif [ "$KIND" = lab ]; then
+  PROJ_ABS="$DATA/$ID/lab"
+  WT="$DATA/$ID/lab"
+  mkdir -p "$WT"
+  BRIEF="$DATA/$ID/brief.md"
 else
   PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
   WT=""
@@ -2283,8 +2317,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1
   fi
-  [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
-elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  [ "$KIND" = secondmate ] || [ "$KIND" = lab ] || validate_spawn_worktree "relaunch" "$T"
+elif [ "$KIND" != secondmate ] && [ "$KIND" != lab ] && [ "$BACKEND" != orca ]; then
   spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -2333,7 +2367,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$KIND" != lab ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
 fi
 
@@ -2678,7 +2712,7 @@ if [ "$KIND" = secondmate ]; then
   MODE=secondmate
   YOLO=off
   : "${SECONDMATE_PROJECTS:=}"
-elif [ "$KIND" = scout ]; then
+elif [ "$KIND" = scout ] || [ "$KIND" = lab ]; then
   MODE=
   YOLO=
 fi

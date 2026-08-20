@@ -286,8 +286,10 @@ yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yol
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
 mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship briefs
 mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship briefs
+mode on a lab brief|brief-refused-b5 --lab --mode direct-PR|--mode applies only to ship briefs
+no-projects on a lab brief|brief-refused-b6 --lab --no-projects|--no-projects applies only to --secondmate charters
 ROWS
-  pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
+  pass "fm-brief.sh: --yolo and scout/secondmate/lab --mode are refused, never silently dropped"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -718,6 +720,27 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+test_lab_scaffold() {
+  local brief home out
+  home="$TMP_ROOT/lab-home"
+  mkdir -p "$home/data"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-lab-pos-err proj --lab 2>&1) || true
+  assert_contains "$out" "--lab takes the task id only" "lab with extra positional did not fail properly"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-lab-q1 --lab >/dev/null 2>&1 \
+    || fail "fm-brief.sh lab scaffold exited non-zero"
+  brief="$home/data/brief-lab-q1/brief.md"
+  assert_present "$brief" "lab brief was not scaffolded"
+  assert_grep "LAB task" "$brief" "lab brief must declare itself a lab task"
+  assert_grep "report.md" "$brief" "lab brief must point at the report deliverable"
+  assert_grep "Writing files outside the lab" "$brief" "lab brief must include file writing guidance"
+  assert_grep "Never touch credential or key material" "$brief" "lab brief must forbid touching credentials"
+  assert_grep "$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md" "$brief" "lab brief must load decision hold lifecycle"
+  assert_no_grep "Promotion:" "$brief" "lab brief must not include promotion instructions"
+  pass "fm-brief: lab scaffold creates valid brief and enforces contracts"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -738,3 +761,4 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_lab_scaffold
