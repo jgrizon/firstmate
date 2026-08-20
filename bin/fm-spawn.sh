@@ -1020,7 +1020,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   }
   RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
-  [ "$RELAUNCH_STATE" = dead ] || {
+  [ "$RELAUNCH_STATE" = dead ] || [ "$RELAUNCH_STATE" = missing ] || {
     echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
     exit 1
   }
@@ -1832,6 +1832,28 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+  if [ -d "$STATE" ]; then
+    local meta other_id other_backend other_target other_state claimed_wt claimed_wt_real
+    for meta in "$STATE"/*.meta; do
+      [ -f "$meta" ] && [ ! -L "$meta" ] || continue
+      other_id=$(basename "$meta" .meta)
+      [ "$other_id" != "$ID" ] || continue
+      claimed_wt=$(grep '^worktree=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+      [ -n "$claimed_wt" ] || continue
+      claimed_wt_real=$(cd "$claimed_wt" 2>/dev/null && pwd -P || true)
+      if [ -n "$claimed_wt_real" ] && [ "$claimed_wt_real" = "$wt_real" ]; then
+        other_backend=$(fm_backend_of_meta "$meta")
+        other_target=$(fm_backend_target_of_meta "$meta")
+        other_state=$(fm_backend_agent_state "$other_backend" "$other_target" 2>/dev/null || printf 'unreadable')
+        case "$other_state" in
+          alive|live)
+            echo "error: $source yielded worktree '$WT' which is already claimed by live task '$other_id'; refusing to allocate a claimed slot" >&2
+            exit 1
+            ;;
+        esac
+      fi
+    done
+  fi
 }
 
 freshen_spawn_worktree_base() {  # <worktree>
@@ -1953,7 +1975,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
 }
 
 W="fm-$ID"
-if [ "$RELAUNCH" -eq 1 ]; then
+if [ "$RELAUNCH" -eq 1 ] && [ "$RELAUNCH_STATE" != missing ]; then
   # Adopt the recorded endpoint instead of creating one. This is what keeps a
   # relaunch a REPLACEMENT rather than a second copy of the task: no new
   # terminal, no second worktree, and every uncommitted change left exactly
@@ -1965,19 +1987,20 @@ if [ "$RELAUNCH" -eq 1 ]; then
   WT_TARGET=$T
   SES=${T%%:*}
 else
-case "$BACKEND" in
-  tmux)
-    SES=$(fm_backend_tmux_container_ensure)
-    T="$SES:$W"
-    # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
-    # id and pins the window name (automatic-rename/allow-rename off) so a captain's
-    # non-default tmux config cannot rename the window away from fm-<id> once
-    # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
-    # rename-critical worktree-detection steps below; the persisted window= handle
-    # stays $T (the name form), which is safe now that rename is disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
-    WT_TARGET="$WID"
-    ;;
+  [ "$RELAUNCH" -eq 0 ] || [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
+  case "$BACKEND" in
+    tmux)
+      SES=$(fm_backend_tmux_container_ensure)
+      T="$SES:$W"
+      # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
+      # id and pins the window name (automatic-rename/allow-rename off) so a captain's
+      # non-default tmux config cannot rename the window away from fm-<id> once
+      # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
+      # rename-critical worktree-detection steps below; the persisted window= handle
+      # stays $T (the name form), which is safe now that rename is disabled.
+      WID=$(fm_backend_tmux_create_task "$SES" "$W" "${WT:-$PROJ_ABS}") || exit 1
+      WT_TARGET="$WID"
+      ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
     # FM_HOME. For every KIND except secondmate, this process's own FM_HOME is
@@ -2134,7 +2157,7 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "${WT:-$PROJ_ABS}" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -2147,7 +2170,7 @@ EOF
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
-    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$PROJ_ABS") || exit 1
+    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "${WT:-$PROJ_ABS}") || exit 1
     read -r ZELLIJ_TAB_ID ZELLIJ_PANE_ID <<EOF
 $ZELLIJ_TASK_IDS
 EOF
@@ -2159,7 +2182,7 @@ EOF
     ;;
   cmux)
     fm_backend_cmux_container_ensure || exit 1
-    CMUX_TASK_IDS=$(fm_backend_cmux_create_task "$W" "$PROJ_ABS") || exit 1
+    CMUX_TASK_IDS=$(fm_backend_cmux_create_task "$W" "${WT:-$PROJ_ABS}") || exit 1
     read -r CMUX_WORKSPACE_ID CMUX_SURFACE_ID <<EOF
 $CMUX_TASK_IDS
 EOF
@@ -2311,6 +2334,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
+    if [ "$RELAUNCH_STATE" = missing ]; then
+      spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
+    fi
     sleep 0.5
   done
   if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
