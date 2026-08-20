@@ -110,6 +110,14 @@ case "${1:-}" in
     done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
+  new-window)
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -n) shift; [ -f "$D/windows" ] && printf '%s\n' "$1" >> "$D/windows"; shift ;;
+        *) shift ;;
+      esac
+    done
+    printf '@1\n'; exit 0 ;;
   list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
 esac
 exit 0
@@ -1312,6 +1320,34 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
+test_spawn_refuses_worktree_claimed_by_another_live_task_metadata() {
+  local dir out rc home
+  dir=$(new_case claimt1 t1)
+  add_ship_task "$dir" t1 claude
+  home="$dir/home"
+  mkdir -p "$home/data/t2"
+  printf '# brief for t2\n\nDo work.\n' > "$home/data/t2/brief.md"
+  printf '%s' "$dir/wt" > "$dir/fake/cwd"
+  out=$(run_spawn "$dir" t2 "$dir/proj" --backend tmux --harness claude --mode direct-PR --yolo off); rc=$?
+  expect_code 1 "$rc" "spawning into a worktree claimed by another task's metadata should refuse"
+  assert_contains "$out" "already claimed by task 't1'" "the refusal should name the claiming task"
+  pass "fm-spawn: refuses to allocate a worktree claimed by another live task's metadata"
+}
+
+test_relaunch_when_endpoint_is_missing_recreates_window_and_preserves_worktree() {
+  local dir out rc home
+  dir=$(new_case missingep rlmissing)
+  add_ship_task "$dir" rlmissing claude
+  home="$dir/home"
+  : > "$dir/fake/windows"
+  printf '%s' "$dir/wt" > "$dir/fake/cwd"
+  out=$(run_control "$dir" rlmissing relaunch --note "recovering missing agent"); rc=$?
+  expect_code 0 "$rc" "relaunching a task with a missing endpoint should succeed"$'\n'"$out"
+  assert_contains "$(cat "$home/state/rlmissing.meta")" "worktree=$dir/wt" "recorded worktree must be preserved"
+  assert_grep "recovering missing agent" "$home/data/rlmissing/brief.md" "progress note must reach the new replacement worker"
+  pass "fm-control relaunch: a missing endpoint is recreated and the recorded worktree is reused"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1358,3 +1394,5 @@ test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_spawn_refuses_worktree_claimed_by_another_live_task_metadata
+test_relaunch_when_endpoint_is_missing_recreates_window_and_preserves_worktree
