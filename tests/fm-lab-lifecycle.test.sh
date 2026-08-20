@@ -208,7 +208,7 @@ EOF
 
   # 2. Spawn lab task
   printf '%s\n' "$lab_dir" > "$fakedir/cwd"
-  out=$(run_spawn "$home" "$fakebin" "$fakedir" "$id" --lab)
+  out=$(run_spawn "$home" "$fakebin" "$fakedir" "$id" claude --lab)
   status=$?
   expect_code 0 "$status" "fm-spawn.sh --lab failed: $out"
 
