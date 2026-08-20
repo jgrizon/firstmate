@@ -9,6 +9,11 @@
 # move only for the registered one. That pair is the whole safety claim for
 # sharing one hook entry with the captain's own agy sessions.
 #
+# It is also the only proof of the busy half of the `agy-hook` source. agy has
+# no second busy source by design, so if `PreInvocation` ever stopped carrying a
+# workspace the record would sit at idle for every turn a crewmate works, and
+# nothing else in the tree would notice.
+#
 # The hook itself must live in agy's real config directory: agy resolves that
 # root from $HOME alone and honours no override, and moving $HOME would take its
 # credentials with it. So this installs into the shared config through the same
@@ -134,16 +139,26 @@ run_agy "$LAB/registered" \
   || fail "agy populated workspacePaths without --add-dir; fm-spawn's binding may be redundant now ($AGY_VERSION)"
 pass "agy still reports no workspace without --add-dir, so fm-spawn's binding is still required ($AGY_VERSION)"
 
-# 4. The same guarded hook under the launch mode the adapter actually ships.
+# 4. The same guarded hook under the launch mode the adapter actually ships,
+# and the only live proof of its BUSY half.
 # `-i` keeps the session interactive, which is a different code path in agy than
 # `-p`, and CORRECTION 2 in this adapter's brief exists because an earlier probe
 # concluded the hook was headless-only. A pane is the only way to exercise it.
+#
 # Both records are cleared first: case 2 already wrote the idle line into
 # live.busy-state, so an assertion made against the surviving copy would pass
-# whether or not this session published anything.
+# whether or not this session published anything. Clearing the record also
+# resets the sequence, which is what turns it into evidence: bin/fm-busy-event.sh
+# derives each seq from the record it replaces, so a run where only `Stop`
+# published leaves seq=1, while a run where `PreInvocation` opened the turn
+# first leaves seq=2. Both events resolve the task from the SAME
+# payload.workspacePaths guard, so a second event under source=agy-hook is proof
+# that agy populated that array for PreInvocation too, not only for Stop.
 rm -f "$STATE/live.turn-ended" "$STATE/live.busy-state"
 run_agy_interactive "$LAB/registered"
+BUSY_SEEN=no
 for _ in $(seq 1 240); do
+  grep -q 'state=busy source=agy-hook' "$STATE/live.busy-state" 2>/dev/null && BUSY_SEEN=yes
   [ -e "$STATE/live.turn-ended" ] && break
   sleep 0.5
 done
@@ -151,4 +166,9 @@ done
   || fail "an interactive agy session did not fire its turn-end marker ($AGY_VERSION)"
 grep -q 'state=idle source=agy-hook' "$STATE/live.busy-state" 2>/dev/null \
   || fail "an interactive agy session did not record a semantic idle event ($AGY_VERSION)"
-pass "the agy global hook fires for the interactive -i launch fm-spawn actually uses ($AGY_VERSION)"
+# The sequence, not the mid-turn poll, is the gate: a fast turn can settle
+# between two polls, but the seq it leaves behind cannot be missed.
+BUSY_SEQ=$(sed -n 's/^v1 .* seq=\([0-9][0-9]*\) .*/\1/p' "$STATE/live.busy-state" 2>/dev/null)
+[ "${BUSY_SEQ:-0}" -gt 1 ] \
+  || fail "an interactive agy session published only one busy-state event (seq=${BUSY_SEQ:-none}); PreInvocation did not open the turn, so a steered agy crewmate would read idle while working ($AGY_VERSION)"
+pass "the agy global hook fires for the interactive -i launch fm-spawn actually uses, both halves (seq=$BUSY_SEQ, busy observed mid-turn: $BUSY_SEEN) ($AGY_VERSION)"

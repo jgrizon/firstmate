@@ -947,15 +947,27 @@ Hook commands run with the working directory set to that config directory, and t
 A probe hook registered for `PreInvocation`, `PostInvocation`, and `Stop` fired for all three, in that order, on an interactive and a `-p` run.
 
 ```text
+PreInvocation  {"artifactDirectoryPath":"…/brain/89cb1ee5…","conversationId":"89cb1ee5…",
+                "initialNumSteps":0,"invocationNum":0,"modelName":"gemini-3.7-flash-high",
+                "transcriptPath":"…/transcript_full.jsonl","workspacePaths":[]}
+
 Stop   {"artifactDirectoryPath":"…/brain/89cb1ee5…","conversationId":"89cb1ee5…","error":"",
         "executionNum":0,"fullyIdle":true,"modelName":"gemini-3.7-flash-high",
         "terminationReason":"NO_TOOL_CALL","transcriptPath":"…/transcript_full.jsonl",
         "workspacePaths":["/tmp/agy-probe-ws"]}
 ```
 
+`PreInvocation` carries `workspacePaths` too, which matters because the installed hook resolves the task from that array for BOTH events.
+It reads `[]` in the sample above for the same reason the `Stop` sample records below, and for no other: that particular probe run passed no `--add-dir`.
+An empty array there is evidence about the launch flags, never evidence that the busy half cannot resolve a workspace.
+
 `workspacePaths` was `[]` on every run launched WITHOUT `--add-dir`, including from a git repository root, and carried the exact directory when `--add-dir` was passed.
 That is why `bin/fm-spawn.sh` binds the task worktree with `--add-dir`: it is the only observed way the guarded hook can tell one task's workspace from another's.
 A `Stop` whose `fullyIdle` is false is a mid-turn boundary; the installed hook publishes nothing for it.
+
+Under `--add-dir` the busy half is credited by effect rather than by reading the payload again.
+The hook publishes a busy event only when it has matched a registered worktree out of `workspacePaths`, so a record carrying `source=agy-hook` and `state=busy` cannot exist unless agy populated that array for `PreInvocation`.
+The end-to-end spawn below produced exactly that record, and `tests/fm-agy-signals-live-e2e.test.sh` now pins the same chain on every run.
 
 ### Folder trust
 
@@ -1018,6 +1030,7 @@ A live agy crewmate then answered `/no-mistakes` with `no-mistakes axi run`, the
 ### End to end
 
 A real `bin/fm-spawn.sh <id> <project> --scout --harness agy --model gemini-3.7-flash-low` cleared the trust dialog on its own, processed its brief, recorded `state=idle source=agy-hook` in the busy record, and touched `state/<id>.turn-ended`.
+Read mid-turn, that same task's record showed `seq=6 state=busy source=agy-hook event=agy-busy` and `bin/fm-crew-state.sh` reported `working (agy-hook)`, which is the observation crediting the `PreInvocation` half.
 An agy session started by hand in an unregistered workspace, with the same global hook installed, left both untouched.
 `bin/fm-control.sh <id> interrupt` ended a running turn (footer returned to `? for shortcuts`) and reported `cancel=unconfirmed`, which is correct: agy fires no hook for a manual interrupt, so the busy record stayed at its last recorded state exactly as Claude's does.
 `exit` stopped the agent and printed `agy --conversation=<uuid>`; `relaunch` armed a fresh busy generation, retired the previous registry entry, and the replacement worker processed its progress note.
