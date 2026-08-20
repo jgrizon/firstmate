@@ -1337,9 +1337,14 @@ resolve_kimi_binary() {
 # ~/.local/bin/agy, but unlike kimi there is no documented fallback location to
 # fall back to, so an absent binary refuses before any endpoint exists rather
 # than guessing a path.
-resolve_agy_binary() {
-  local candidate dir
-  candidate=$(command -v agy 2>/dev/null || true)
+# The PATH-only resolver agy and muse share: one published name, no documented
+# fallback location, so an absent binary refuses before any endpoint exists
+# rather than guessing a path. kimi keeps its own resolver because it genuinely
+# differs - it HAS a documented HOME fallback. The caller supplies its own
+# diagnostic so each refusal still names the product a captain would install.
+resolve_path_binary() {  # <name> <not-found-message>
+  local name=$1 message=$2 candidate dir
+  candidate=$(command -v "$name" 2>/dev/null || true)
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then
     case "$candidate" in
       /*) printf '%s\n' "$candidate"; return 0 ;;
@@ -1352,27 +1357,18 @@ resolve_agy_binary() {
         ;;
     esac
   fi
-  echo "error: agy executable not found on PATH; install the Antigravity CLI or select a different verified harness" >&2
+  echo "$message" >&2
   return 1
 }
 
+resolve_agy_binary() {
+  resolve_path_binary agy \
+    "error: agy executable not found on PATH; install the Antigravity CLI or select a different verified harness"
+}
+
 resolve_muse_binary() {
-  local candidate dir
-  candidate=$(command -v muse 2>/dev/null || true)
-  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-    case "$candidate" in
-      /*) printf '%s\n' "$candidate"; return 0 ;;
-      *)
-        dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || dir=
-        if [ -n "$dir" ]; then
-          printf '%s/%s\n' "$dir" "$(basename "$candidate")"
-          return 0
-        fi
-        ;;
-    esac
-  fi
-  echo "error: muse executable not found on PATH; install Muse Code or select a different verified harness" >&2
-  return 1
+  resolve_path_binary muse \
+    "error: muse executable not found on PATH; install Muse Code or select a different verified harness"
 }
 
 # muse_credential_present: 0 when a launched muse pane can reach its provider
@@ -2284,6 +2280,17 @@ agy_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
 
+# Every screen check below reads the pane's LIVE rows, never the scrollback the
+# capture also carries. A relaunch adopts the existing pane without clearing it,
+# so the previous incarnation's accepted trust dialog - trusting option still
+# marked selected - is sitting in that history; an unbounded read would match it
+# on the first poll, fire an unrequested Enter into a pane where agy has not
+# started, and then never accept the dialog that really renders.
+# bin/fm-composer-lib.sh owns the window, shared with the footer check.
+agy_live_rows() {  # <pane-capture>
+  fm_pane_live_rows "${1-}"
+}
+
 # 0 when the trust dialog is showing with the trusting option selected. agy
 # marks the selected row with a leading `>` (verified, agy 1.1.15).
 agy_trust_dialog_ready() {  # <plain-pane-capture>
@@ -2314,7 +2321,7 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
 agy_clear_trust_dialog() {
   local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
   while [ "$i" -lt "$max" ]; do
-    pane=$(agy_capture)
+    pane=$(agy_live_rows "$(agy_capture)")
     if agy_trust_dialog_ready "$pane"; then
       spawn_send_key "$T" Enter
       return 0

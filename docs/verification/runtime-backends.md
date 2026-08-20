@@ -946,28 +946,32 @@ The Gemini ids encode the reasoning level, so firstmate selects the class throug
 Hook commands run with the working directory set to that config directory, and the process environment carries `ANTIGRAVITY_CONVERSATION_ID` only.
 A probe hook registered for `PreInvocation`, `PostInvocation`, and `Stop` fired for all three, in that order, on an interactive and a `-p` run.
 
-```text
-PreInvocation  {"artifactDirectoryPath":"…/brain/89cb1ee5…","conversationId":"89cb1ee5…",
-                "initialNumSteps":0,"invocationNum":0,"modelName":"gemini-3.7-flash-high",
-                "transcriptPath":"…/transcript_full.jsonl","workspacePaths":[]}
+Both payloads below are from ONE session, conversation `e2a970e1-2b16-44a6-9564-a5092ceda045`, launched WITH `--add-dir` (2026-08-20, agy 1.1.15).
 
-Stop   {"artifactDirectoryPath":"…/brain/89cb1ee5…","conversationId":"89cb1ee5…","error":"",
-        "executionNum":0,"fullyIdle":true,"modelName":"gemini-3.7-flash-high",
-        "terminationReason":"NO_TOOL_CALL","transcriptPath":"…/transcript_full.jsonl",
-        "workspacePaths":["/tmp/agy-probe-ws"]}
+```text
+PreInvocation  {"artifactDirectoryPath":"~/.gemini/antigravity-cli/brain/e2a970e1-2b16-44a6-9564-a5092ceda045",
+                "conversationId":"e2a970e1-2b16-44a6-9564-a5092ceda045","initialNumSteps":1,
+                "invocationNum":0,"modelName":"gemini-3.7-flash-high",
+                "transcriptPath":"~/.gemini/antigravity-cli/brain/e2a970e1-2b16-44a6-9564-a5092ceda045/.system_generated/logs/transcript_full.jsonl",
+                "workspacePaths":["/tmp/agy-probe2/ws"]}
+
+Stop           {"artifactDirectoryPath":"~/.gemini/antigravity-cli/brain/e2a970e1-2b16-44a6-9564-a5092ceda045",
+                "conversationId":"e2a970e1-2b16-44a6-9564-a5092ceda045","error":"","executionNum":0,
+                "fullyIdle":true,"modelName":"gemini-3.7-flash-high","terminationReason":"NO_TOOL_CALL",
+                "transcriptPath":"~/.gemini/antigravity-cli/brain/e2a970e1-2b16-44a6-9564-a5092ceda045/.system_generated/logs/transcript_full.jsonl",
+                "workspacePaths":["/tmp/agy-probe2/ws"]}
 ```
 
-`PreInvocation` carries `workspacePaths` too, which matters because the installed hook resolves the task from that array for BOTH events.
-It reads `[]` in the sample above for the same reason the `Stop` sample records below, and for no other: that particular probe run passed no `--add-dir`.
-An empty array there is evidence about the launch flags, never evidence that the busy half cannot resolve a workspace.
+`PreInvocation` carries `workspacePaths` exactly as `Stop` does, with the same directory, so the installed hook resolves the task from that array for BOTH events at the payload level.
+That is what makes the busy half of the `agy-hook` source usable, and it is observed rather than inferred.
 
-`workspacePaths` was `[]` on every run launched WITHOUT `--add-dir`, including from a git repository root, and carried the exact directory when `--add-dir` was passed.
+A SEPARATE probe run, one that passed no `--add-dir`, reported `workspacePaths` as `[]` on every event, including when launched from a git repository root; passing `--add-dir` carried the exact directory.
 That is why `bin/fm-spawn.sh` binds the task worktree with `--add-dir`: it is the only observed way the guarded hook can tell one task's workspace from another's.
+An empty array is evidence about that run's launch flags and nothing else.
 A `Stop` whose `fullyIdle` is false is a mid-turn boundary; the installed hook publishes nothing for it.
 
-Under `--add-dir` the busy half is credited by effect rather than by reading the payload again.
-The hook publishes a busy event only when it has matched a registered worktree out of `workspacePaths`, so a record carrying `source=agy-hook` and `state=busy` cannot exist unless agy populated that array for `PreInvocation`.
-The end-to-end spawn below produced exactly that record, and `tests/fm-agy-signals-live-e2e.test.sh` now pins the same chain on every run.
+The end-to-end spawn below corroborates the payload evidence by effect.
+The hook publishes a busy event only when it has matched a registered worktree out of `workspacePaths`, so the `source=agy-hook` busy record it produced could not exist unless `PreInvocation` carried one, and `tests/fm-agy-signals-live-e2e.test.sh` pins that chain on every run.
 
 ### Folder trust
 

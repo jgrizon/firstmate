@@ -156,16 +156,20 @@ pass "agy still reports no workspace without --add-dir, so fm-spawn's binding is
 # that agy populated that array for PreInvocation too, not only for Stop.
 rm -f "$STATE/live.turn-ended" "$STATE/live.busy-state"
 run_agy_interactive "$LAB/registered"
+# Wait for the RECORD to settle, not for the marker. The installed hook touches
+# the turn-end marker before it execs the busy applier, so the marker appearing
+# proves nothing about the record yet and breaking on it would report a false
+# regression against a healthy binary.
 BUSY_SEEN=no
 for _ in $(seq 1 240); do
   grep -q 'state=busy source=agy-hook' "$STATE/live.busy-state" 2>/dev/null && BUSY_SEEN=yes
-  [ -e "$STATE/live.turn-ended" ] && break
+  grep -q 'state=idle source=agy-hook' "$STATE/live.busy-state" 2>/dev/null && break
   sleep 0.5
 done
+grep -q 'state=idle source=agy-hook' "$STATE/live.busy-state" 2>/dev/null \
+  || fail "an interactive agy session did not record a semantic idle event within 120s ($AGY_VERSION)"
 [ -e "$STATE/live.turn-ended" ] \
   || fail "an interactive agy session did not fire its turn-end marker ($AGY_VERSION)"
-grep -q 'state=idle source=agy-hook' "$STATE/live.busy-state" 2>/dev/null \
-  || fail "an interactive agy session did not record a semantic idle event ($AGY_VERSION)"
 # The sequence, not the mid-turn poll, is the gate: a fast turn can settle
 # between two polls, but the seq it leaves behind cannot be missed.
 BUSY_SEQ=$(sed -n 's/^v1 .* seq=\([0-9][0-9]*\) .*/\1/p' "$STATE/live.busy-state" 2>/dev/null)

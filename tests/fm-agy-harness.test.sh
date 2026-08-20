@@ -65,6 +65,21 @@ AGY_STALE_FOOTER_SCREEN=$(
   printf '%s\n' "$AGY_DEAD_SHELL_SCREEN"
 )
 
+# A relaunch pane: the PREVIOUS incarnation's already-accepted trust dialog is
+# still in scrollback, trusting option and all, with that session's output and a
+# fresh shell prompt below it. Reading the whole capture would match those rows
+# on the first poll, fire an Enter into a pane where agy has not started, and
+# then never accept the dialog that really renders.
+AGY_STALE_DIALOG_SCREEN=$(
+  printf 'Accessing workspace:\n'
+  printf '/tmp/a-previous-worktree\n'
+  printf 'Do you trust the contents of this project?\n'
+  printf '> Yes, I trust this folder\n'
+  printf '  No, exit\n'
+  seq 1 12 | sed 's/^/  transcript row /'
+  printf '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"\n'
+)
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -93,6 +108,7 @@ fake_screen() {
     pending) hold_then_trust "$FM_FAKE_AGY_PENDING_SCREEN" ;;
     dead-shell) hold_then_trust "$FM_FAKE_AGY_DEAD_SCREEN" ;;
     stale-footer) hold_then_trust "$FM_FAKE_AGY_STALE_SCREEN" ;;
+    stale-dialog) hold_then_trust "$FM_FAKE_AGY_STALE_DIALOG" ;;
     *) printf 'shell starting\n$ \n' ;;
   esac
 }
@@ -110,6 +126,7 @@ fake_cursor_y() {
     running) printf '1\n' ;;
     dead-shell) printf '2\n' ;;
     stale-footer) printf '15\n' ;;
+    stale-dialog) printf '17\n' ;;
     *) printf '0\n' ;;
   esac
 }
@@ -222,6 +239,7 @@ run_spawn() {
     FM_FAKE_AGY_PENDING_SCREEN="$AGY_PRELAUNCH_SCREEN" \
     FM_FAKE_AGY_DEAD_SCREEN="$AGY_DEAD_SHELL_SCREEN" \
     FM_FAKE_AGY_STALE_SCREEN="$AGY_STALE_FOOTER_SCREEN" \
+    FM_FAKE_AGY_STALE_DIALOG="$AGY_STALE_DIALOG_SCREEN" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_AGY_TRUST_POLLS="${FM_AGY_TRUST_POLLS:-3}" FM_AGY_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
@@ -379,6 +397,11 @@ test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
     || fail "the stale-footer case needs a dead pane the classifier reads empty, got '$verdict'"
   ! fm_agy_footer_present "$AGY_STALE_FOOTER_SCREEN" \
     || fail "a footer left in scrollback was credited to a pane that is now a dead shell"
+  printf '%s\n' "$AGY_STALE_DIALOG_SCREEN" | grep -Fq 'Do you trust the contents of this project' \
+    || fail "the stale-dialog case needs a screen whose scrollback holds a trust dialog"
+  fm_pane_live_rows "$AGY_STALE_DIALOG_SCREEN" \
+    | grep -Fq 'Do you trust the contents of this project' \
+    && fail "the live-rows window still exposed a trust dialog the pane scrolled past"
 
   id=agy-dead-shell-z2d
   rec=$(make_spawn_case dead-shell "$id")
@@ -407,6 +430,21 @@ test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
   # And the gate must still FIRE on a real agy pane, or every spawn would just
   # burn its whole poll budget. The pane a real `-i` launch produces is MID-TURN
   # - busy footer, composer `unknown` - so that is the state asserted here.
+  # A dialog left in a relaunch pane's scrollback must not end the wait either,
+  # and must not draw an Enter: the dialog that renders afterwards is the one
+  # that has to be accepted.
+  id=agy-stale-dialog-z2g
+  rec=$(make_spawn_case stale-dialog "$id")
+  read_spawn_record "$rec"
+  FM_FAKE_AGY_FIRST_SCREEN=stale-dialog FM_AGY_TRUST_POLLS=8 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
+    || fail "agy spawn should succeed when a stale dialog sits above the live rows"
+  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
+    || fail "a trust dialog matched out of scrollback, so the one that really rendered was never accepted"
+  keys=$(post_launch_enters "$CASE_DIR")
+  [ "$keys" -eq 2 ] \
+    || fail "a stale dialog in scrollback changed the Enters sent (got $keys)"
+
   id=agy-started-z2e
   rec=$(make_spawn_case started "$id")
   read_spawn_record "$rec"
