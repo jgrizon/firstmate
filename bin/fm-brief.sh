@@ -8,9 +8,13 @@
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+#        fm-brief.sh <task-id> --lab [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
+#   --lab writes the lab contract: a repo-less worker in data/<task-id>/lab/,
+#   the deliverable is a report at data/<task-id>/report.md (no branch, no push, no PR),
+#   and the lab directory is retired rather than deleted at teardown.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -41,7 +45,7 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
+# --mode is refused on scout, lab, and secondmate scaffolds: a scout or lab deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
@@ -122,6 +126,7 @@ for a in "$@"; do
   fi
   case "$a" in
     --scout) KIND=scout ;;
+    --lab) KIND=lab ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
@@ -151,13 +156,14 @@ if [ "$KIND" = ship ]; then
     *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
-  echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  echo "error: --mode applies only to ship briefs; a scout or lab delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
 fi
+[ "${#POS[@]}" -ge 1 ] || { echo "error: task id required" >&2; exit 1; }
 ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
-  echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
+  echo "error: --herdr-lab applies only to crewmate ship, scout, or lab briefs" >&2
   exit 1
 fi
 
@@ -264,7 +270,13 @@ fi
 exit 0
 fi
 
-REPO=${POS[1]}
+if [ "$KIND" = lab ]; then
+  [ "${#POS[@]}" -eq 1 ] || { echo "error: --lab takes the task id only; a repo-less task has no repository" >&2; exit 1; }
+  REPO=
+else
+  [ "${#POS[@]}" -ge 2 ] || { echo "error: repo argument required" >&2; exit 1; }
+  REPO=${POS[1]}
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -296,6 +308,58 @@ If the task will start, stop, delete, restart, profile, or otherwise drive Herdr
 Do not add Herdr lifecycle commands to this unguarded brief by hand.
 EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
+fi
+
+if [ "$KIND" = lab ]; then
+cat > "$BRIEF" <<EOF
+You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+
+# Task
+{TASK}
+
+$HERDR_SECTION
+
+# Setup
+You are in an isolated directory at $DATA/$ID/lab/, with no git repository.
+This is a LAB task: a repo-less worker whose deliverable is a written report at data/$ID/report.md, not a PR.
+The lab directory is retired to data/.labs-retired/$ID/ at teardown rather than deleted.
+
+# Rules
+1. Never push to any remote and never open a PR.
+2. Writing files outside the lab: you may create and edit files at declared paths outside the lab when the task calls for it.
+   - Creating a file is ordinary. Deleting, overwriting, or moving a file that already existed needs the captain's explicit word for that concrete file, unless the task's whole point is editing that file and the brief said so.
+   - Read before you replace. Never overwrite a file nobody has looked at.
+   - Never touch credential or key material, another tool's managed config store, or anything under ~/.ssh, ~/.config/<tool>, keychains, or ~/.aws-shaped directories.
+   - Project repositories are unchanged: never write under projects/ directly.
+3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+4. Report status by appending one line:
+   \`echo "{state}: {one short line}" >> $STATUS_FILE\`
+   States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
+   Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+   would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
+   FYI progress lines; firstmate reads your pane for that.
+   Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - ONLY when you are deliberately idling on a
+   known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
+   firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
+   treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
+5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+6. If a decision belongs to a human (product choices, destructive actions),
+   append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+   A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
+   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append \`resolved: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one) as you resume.
+7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
+   every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
+   daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+# Definition of done
+Write your findings to \`$DATA/$ID/report.md\`.
+The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+If your deliverable is a visual artifact the captain will review and iterate on, you may host the Lavish review loop yourself (poll, revise, re-serve, staying alive) instead of handing it back to firstmate.
+Before reporting done, read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\` and pass its shared completion gate for the report and any visual review.
+When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
+EOF
+echo "scaffolded: $BRIEF (lab; replace {TASK})"
+exit 0
 fi
 
 if [ "$KIND" = scout ]; then

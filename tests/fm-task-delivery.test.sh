@@ -112,7 +112,19 @@ EOF
   status=$?
   [ "$status" -ne 0 ] || fail "a secondmate spawn carrying delivery flags should exit non-zero"
   assert_contains "$out" "applies only to ship spawns" "secondmate spawn did not refuse the delivery flags"
-  pass "fm-spawn: scout and secondmate spawns refuse ship delivery flags"
+
+  write_brief "$home" delivery-lab-a3
+  out=$(run_spawn "$home" "$fakebin" delivery-lab-a3 claude --lab --mode direct-PR)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a lab spawn carrying --mode should exit non-zero"
+  assert_contains "$out" "--mode applies only to ship spawns" "lab spawn did not refuse --mode"
+
+  out=$(run_spawn "$home" "$fakebin" delivery-lab-a3 claude --lab --yolo on)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a lab spawn carrying --yolo should exit non-zero"
+  assert_contains "$out" "--yolo applies only to ship spawns" "lab spawn did not refuse --yolo"
+
+  pass "fm-spawn: scout, secondmate, and lab spawns refuse ship delivery flags"
 }
 
 # The brief is what the worker actually follows, so a spawn whose explicit mode
@@ -237,6 +249,16 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided approval posture"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
+
+  # A lab task is repo-less and cannot be promoted to ship.
+  printf 'window=fm-promote-lab\nkind=lab\nworktree=/tmp/lab\n' > "$home/state/promote-lab.meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-lab --mode direct-PR --yolo on 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion of a lab task should exit non-zero"
+  assert_contains "$out" "task promote-lab is a lab task; a repo-less task has no repository to ship into" \
+    "promote did not refuse a lab task with the repository explanation"
+  assert_grep 'kind=lab' "$home/state/promote-lab.meta" "refused lab promotion altered task meta"
+
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 

@@ -681,33 +681,43 @@ safe_checkpoint() {
   [ -n "$WT" ] || die "task $ID has no recorded worktree; refusing to relaunch without a recorded local copy to preserve"
   [ -d "$WT" ] || die "task $ID's recorded worktree $WT is missing; refusing to relaunch and lose track of its work"
   wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || die "task $ID's recorded worktree $WT cannot be resolved"
-  wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) \
-    || die "task $ID's recorded worktree $WT is not a git worktree; refusing to relaunch without a checkout whose unlanded work can be accounted for"
-  wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P) || wt_top_real=$wt_top
-  [ "$wt_real" = "$wt_top_real" ] \
-    || die "task $ID's recorded worktree $WT is not a worktree root (root is $wt_top); refusing to relaunch against an ambiguous checkout"
-  if head=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null); then
-    :
-  elif head_ref=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null); then
-    if git -C "$WT" show-ref --verify --quiet "$head_ref" 2>/dev/null; then
-      die "task $ID's worktree HEAD exists but cannot be resolved; refusing to relaunch from an unreadable checkout"
+  if [ "$KIND" = lab ]; then
+    local lab_expected expected_canon file_count
+    lab_expected="$DATA/$ID/lab"
+    expected_canon=$(cd "$lab_expected" 2>/dev/null && pwd -P || printf '%s' "$lab_expected")
+    [ "$wt_real" = "$expected_canon" ] \
+      || die "lab task $ID's recorded worktree $WT does not match expected $lab_expected; refusing to relaunch"
+    file_count=$(find "$WT" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+    CHECKPOINT_LINES+=("file_count=$file_count")
+  else
+    wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) \
+      || die "task $ID's recorded worktree $WT is not a git worktree; refusing to relaunch without a checkout whose unlanded work can be accounted for"
+    wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P) || wt_top_real=$wt_top
+    [ "$wt_real" = "$wt_top_real" ] \
+      || die "task $ID's recorded worktree $WT is not a worktree root (root is $wt_top); refusing to relaunch against an ambiguous checkout"
+    if head=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null); then
+      :
+    elif head_ref=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null); then
+      if git -C "$WT" show-ref --verify --quiet "$head_ref" 2>/dev/null; then
+        die "task $ID's worktree HEAD exists but cannot be resolved; refusing to relaunch from an unreadable checkout"
+      else
+        head_ref_status=$?
+        [ "$head_ref_status" -eq 1 ] \
+          || die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
+        head=unborn
+      fi
     else
-      head_ref_status=$?
-      [ "$head_ref_status" -eq 1 ] \
-        || die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
-      head=unborn
+      die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
     fi
-  else
-    die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
+    status_output=$(git -C "$WT" status --porcelain 2>/dev/null) \
+      || die "task $ID's worktree status cannot be inspected; refusing to relaunch without accounting for local changes"
+    if [ -n "$status_output" ]; then
+      dirty=yes
+    else
+      dirty=no
+    fi
+    CHECKPOINT_LINES+=("worktree_head=$head" "worktree_dirty=$dirty")
   fi
-  status_output=$(git -C "$WT" status --porcelain 2>/dev/null) \
-    || die "task $ID's worktree status cannot be inspected; refusing to relaunch without accounting for local changes"
-  if [ -n "$status_output" ]; then
-    dirty=yes
-  else
-    dirty=no
-  fi
-  CHECKPOINT_LINES+=("worktree_head=$head" "worktree_dirty=$dirty")
   if [ "$KIND" = secondmate ]; then
     # A secondmate's own crewmates outlive its relaunch: they run in their own
     # endpoints, and the relaunched secondmate reconciles them from its home's
@@ -748,7 +758,7 @@ record_note() {
   stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '%s\n' "$NOTE" > "$NOTE_FILE"
   case "$KIND" in
-    ship|scout)
+    ship|scout|lab)
       cp -p "$RELAUNCH_BRIEF" "$BRIEF_PRIOR" \
         || die "could not preserve task $ID's instructions before recording the progress note"
       {
@@ -773,7 +783,7 @@ do_relaunch() {
   resolve_relaunch_profile
 
   case "$KIND" in
-    ship|scout)
+    ship|scout|lab)
       RELAUNCH_BRIEF="$DATA/$ID/brief.md"
       [ -f "$RELAUNCH_BRIEF" ] \
         || die "task $ID has no instructions at $RELAUNCH_BRIEF; refusing to relaunch a worker with nothing to work from"

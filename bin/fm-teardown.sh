@@ -2,7 +2,7 @@
 # Tear down a finished task: return the treehouse worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
 # clear volatile state, refresh/prune the project's clone for PR-based ship
-# tasks, then print a backlog-refresh reminder for ship and scout teardowns
+# tasks, then print a backlog-refresh reminder for ship, scout, and lab teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
@@ -25,10 +25,13 @@
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
-# Scout tasks (kind=scout in meta) carve out of that check: their worktree is
-# declared scratch and the report at data/<task-id>/report.md is the work
-# product. Teardown proceeds only once the report exists and the shared
-# unresolved-decision completion gate verifies its captain-held inventory.
+# Scout and lab tasks (kind=scout or kind=lab in meta) carve out of that check: their
+# deliverable is the report at data/<task-id>/report.md rather than landed code.
+# Teardown proceeds only once the report exists and the shared unresolved-decision
+# completion gate verifies its captain-held inventory.
+# A scout worktree is scratch and returned to the pool; a lab directory at
+# data/<task-id>/lab/ is retired by moving it to data/.labs-retired/<task-id>/ rather
+# than deleting it.
 # Before destructive cleanup, teardown validates task check artifacts and any
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
@@ -55,7 +58,7 @@
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
-#   --force skips ordinary-task dirty and landed-work checks, skips scout report
+#   --force skips ordinary-task dirty and landed-work checks, skips scout/lab report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
 #
@@ -911,7 +914,7 @@ backlog_refresh_reminder() {
   [ "$KIND" = secondmate ] && return 0
   if fm_tasks_axi_backend_available "$CONFIG"; then
     case "$KIND" in
-      scout)
+      scout|lab)
         report_path="data/$ID/report.md"
         done_cmd="tasks-axi done $ID --report $report_path"
         ;;
@@ -1153,7 +1156,7 @@ validate_worktree_teardown_safety() {
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
-    secondmate|scout) return 0 ;;
+    secondmate|scout|lab) return 0 ;;
   esac
 
   if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
@@ -2325,16 +2328,16 @@ if [ "$KIND" = secondmate ] && [ "$FORCE" = "--force" ]; then
   cleanup_firstmate_home_children "$HOME_PATH" || exit $?
 fi
 
-if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
+if { [ "$KIND" = scout ] || [ "$KIND" = lab ]; } && [ "$FORCE" != "--force" ]; then
   REPORT="$DATA/$ID/report.md"
   if [ ! -f "$REPORT" ]; then
-    echo "REFUSED: scout task $ID has no report at $REPORT." >&2
+    echo "REFUSED: $KIND task $ID has no report at $REPORT." >&2
     echo "The report is the work product. Have the crewmate write it, or use --force after explicit discard approval." >&2
     exit 1
   fi
   if ! FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
       FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-decision-hold.sh" verify "$ID" >/dev/null; then
-    echo "REFUSED: scout task $ID has not passed the unresolved-decision completion gate." >&2
+    echo "REFUSED: $KIND task $ID has not passed the unresolved-decision completion gate." >&2
     echo "Inventory its report and any visual review through bin/fm-decision-hold.sh before teardown." >&2
     exit 1
   fi
@@ -2362,7 +2365,7 @@ if [ "$FORCE" != "--force" ] \
   fi
 fi
 
-if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != lab ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
   if ! inspectable_git_worktree "$WT"; then
     echo "REFUSED: Orca ship task $ID has no inspectable git worktree at ${WT:-<missing>}." >&2
     echo "Cannot verify dirty or unlanded work; restore the worktree path or get explicit OK to discard, then --force." >&2
@@ -2435,6 +2438,23 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
+elif [ "$KIND" = lab ]; then
+  LAB_EXPECTED="$DATA/$ID/lab"
+  wt_canon=$(cd "$WT" 2>/dev/null && pwd -P || printf '%s' "$WT")
+  expected_canon=$(cd "$LAB_EXPECTED" 2>/dev/null && pwd -P || printf '%s' "$LAB_EXPECTED")
+  if [ "$wt_canon" != "$expected_canon" ]; then
+    echo "REFUSED: lab task $ID recorded worktree '$WT' does not match expected '$LAB_EXPECTED'; refusing teardown" >&2
+    exit 1
+  fi
+  if [ -d "$WT" ]; then
+    remove_worktree_hook_files "$WT"
+    LABS_RETIRED="$DATA/.labs-retired"
+    mkdir -p "$LABS_RETIRED"
+    RETIRED_DEST="$LABS_RETIRED/$ID"
+    rm -rf "$RETIRED_DEST" 2>/dev/null || true
+    mv "$WT" "$RETIRED_DEST"
+    echo "teardown: retired lab $ID to $RETIRED_DEST"
+  fi
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
@@ -2554,7 +2574,7 @@ rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note"
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
-if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
+if [ "$KIND" != scout ] && [ "$KIND" != lab ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
 echo "teardown $ID complete (window $T, worktree $WT)"
