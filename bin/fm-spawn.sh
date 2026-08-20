@@ -2278,15 +2278,43 @@ agy_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
 
-# Every screen check below reads the pane's LIVE rows, never the scrollback the
-# capture also carries. A relaunch adopts the existing pane without clearing it,
-# so the previous incarnation's accepted trust dialog - trusting option still
-# marked selected - is sitting in that history; an unbounded read would match it
-# on the first poll, fire an unrequested Enter into a pane where agy has not
-# started, and then never accept the dialog that really renders.
-# bin/fm-composer-lib.sh owns the window, shared with the footer check.
-agy_live_rows() {  # <pane-capture>
-  fm_pane_live_rows "${1-}"
+# The rows agy has drawn SINCE THIS LAUNCH, and the window every check below
+# reads. `spawn_send_literal` types $LAUNCH into the pane, so the LAST occurrence
+# of that literal is the boundary between whatever the pane held before and
+# everything this incarnation has painted.
+#
+# Nothing weaker works here. A relaunch adopts its pane without clearing it, so
+# the previous incarnation's accepted trust dialog - trusting option still marked
+# selected - and its rendered footer are both still in the capture. No row count
+# separates them from the new launch, and neither does a prompt row: agy prints
+# its own rows below the typed command a fraction of a second later, and the
+# boundary has to survive that. Matching the launch itself is what does.
+#
+# The comparison ignores whitespace on both sides because the pane WRAPS a long
+# launch command across rows and pads them; squashing both makes the match
+# independent of where the terminal chose to break it.
+#
+# Printing nothing when the literal is absent is deliberate: that is not proof of
+# anything, so the caller keeps polling rather than widening to a looser window
+# that a previous incarnation's rows could satisfy.
+agy_rows_since_launch() {  # <pane-capture> <launch-literal>
+  printf '%s\n' "${1-}" | FM_AGY_LAUNCH_NEEDLE="${2-}" awk '
+    function squash(s) { gsub(/[[:space:]]/, "", s); return s }
+    { rows[NR] = $0; flat = flat squash($0); ends[NR] = length(flat) }
+    END {
+      needle = squash(ENVIRON["FM_AGY_LAUNCH_NEEDLE"])
+      if (needle == "") exit
+      last = 0
+      start = 1
+      while ((at = index(substr(flat, start), needle)) > 0) {
+        last = start + at + length(needle) - 2
+        start = start + at
+      }
+      if (last == 0) exit
+      for (i = 1; i <= NR; i++) if (ends[i] >= last) { anchor = i; break }
+      for (i = anchor + 1; i <= NR; i++) print rows[i]
+    }
+  '
 }
 
 # 0 when the trust dialog is showing with the trusting option selected. agy
@@ -2338,21 +2366,23 @@ agy_trust_selection_drawn() {  # <plain-pane-capture>
 # post-launch window; requiring the idle token, or requiring an idle-only
 # composer verdict alongside it, would shut the gate exactly when it is needed
 # and cost every spawn its full poll budget. bin/fm-composer-lib.sh owns that
-# signature and bounds the read to the live rows.
+# signature; the rows it is asked about are bounded here, by the launch above.
 agy_clear_trust_dialog() {
   local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
   local prompt_seen=0
   while [ "$i" -lt "$max" ]; do
-    pane=$(agy_live_rows "$(agy_capture)")
-    if agy_trust_dialog_ready "$pane"; then
-      spawn_send_key "$T" Enter
-      return 0
-    fi
-    if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
-      prompt_seen=1
-      agy_trust_selection_drawn "$pane" && return 1
-    elif fm_agy_footer_present "$pane"; then
-      return 0
+    pane=$(agy_rows_since_launch "$(agy_capture)" "$LAUNCH")
+    if [ -n "$pane" ]; then
+      if agy_trust_dialog_ready "$pane"; then
+        spawn_send_key "$T" Enter
+        return 0
+      fi
+      if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
+        prompt_seen=1
+        agy_trust_selection_drawn "$pane" && return 1
+      elif fm_agy_footer_present "$pane"; then
+        return 0
+      fi
     fi
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"

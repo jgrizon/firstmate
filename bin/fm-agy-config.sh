@@ -227,7 +227,7 @@ def hook_block():
     def entry(event):
         return {
             "type": "command",
-            "command": f'bash "{HOOK}" {event}',
+            "command": f"bash {shlex.quote(HOOK)} {event}",
             "timeout": 10,
         }
 

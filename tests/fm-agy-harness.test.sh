@@ -56,41 +56,27 @@ AGY_DEAD_SHELL_SCREEN=$(printf '%s\n' \
   'agy: error: unknown model id' \
   '❯ ')
 
-# The same dead pane, with the footer agy really did render sitting directly
-# above it. Nothing pads the two apart, because nothing does in practice either:
-# agy can die two rows after its last frame. The redrawn prompt row at the
-# bottom is the whole boundary, so only the live rows may count.
-AGY_STALE_FOOTER_SCREEN=$(
-  printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
-  printf '%s\n' "$AGY_DEAD_SHELL_SCREEN"
-)
-
-# A relaunch pane, the shape `--relaunch` actually adopts: the PREVIOUS
-# incarnation's already-accepted trust dialog, trusting option and all, sitting
-# directly above the freshly typed launch command. Matching those rows on the
-# first poll would fire an Enter into a pane where the new agy has not started,
-# and the dialog that really renders a moment later would never be accepted -
-# a wedged worker reported as spawned.
-# The dialog as agy draws it while it is LIVE: the question, the explanation,
-# then the options with the trusting one marked. Its selected row begins with a
-# prompt glyph, which is why the live-rows boundary cannot be any prompt row.
-AGY_LIVE_DIALOG_SCREEN=$(
-  printf 'Accessing workspace:\n'
-  printf '/tmp/a-task-worktree\n'
-  printf 'Do you trust the contents of this project?\n'
-  printf 'Antigravity CLI requires permission to read, edit, and execute files here.\n'
-  printf '> Yes, I trust this folder\n'
-  printf '  No, exit\n'
-  printf '  ↑/↓ Navigate · enter Confirm\n'
-)
-
+# What a relaunch adopts: the PREVIOUS incarnation's already-accepted trust
+# dialog, trusting option and all, still in the pane. The fake renders this
+# ABOVE the launch command fm-spawn types, which is where a relaunch really
+# leaves it. Matching those rows would fire an Enter into a pane where the new
+# agy has not started, and the dialog that renders a moment later would never be
+# accepted - a wedged worker reported as spawned.
 AGY_STALE_DIALOG_SCREEN=$(
   printf 'Accessing workspace:\n'
   printf '/tmp/a-previous-worktree\n'
   printf 'Do you trust the contents of this project?\n'
   printf '> Yes, I trust this folder\n'
   printf '  No, exit\n'
-  printf '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"\n'
+)
+
+# What agy prints in the moments after a launch, before it has drawn anything
+# of its own. The stale cases render this BELOW the typed launch command: a
+# boundary that only holds while the command is the bottom row would reopen the
+# instant this arrives, so every stale fixture carries it.
+AGY_STARTUP_SCREEN=$(
+  printf 'Antigravity CLI 1.1.15\n'
+  printf 'loading workspace...\n'
 )
 
 make_spawn_fakebin() {
@@ -102,7 +88,21 @@ set -u
 printf '%s\n' "$*" >> "$FM_FAKE_TMUX_CALL_LOG"
 state=$(cat "$FM_FAKE_AGY_STATE" 2>/dev/null || true)
 rule() { printf '────────────────────────────────────────\n'; }
+# The pane the real gate reads: whatever history it already held, then the
+# launch command fm-spawn typed, then what agy has drawn since. Everything
+# above that command belongs to a previous incarnation.
 fake_screen() {
+  case "$state" in
+    stale-footer)
+      printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
+      printf '%s\n' "$FM_FAKE_AGY_DEAD_SCREEN"
+      ;;
+    stale-dialog) printf '%s\n' "$FM_FAKE_AGY_STALE_DIALOG" ;;
+  esac
+  case "$state" in
+    typed|'') : ;;
+    *) printf '❯ %s\n' "$(cat "$FM_FAKE_AGY_STATE.launch" 2>/dev/null || true)" ;;
+  esac
   case "$state" in
     trust)
       printf 'Accessing workspace:\n\n%s\n\n' "$FM_FAKE_PANE_PATH"
@@ -131,10 +131,9 @@ fake_screen() {
       printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
       ;;
     pending) hold_then_trust "$FM_FAKE_AGY_PENDING_SCREEN" ;;
-    dead-shell) hold_then_trust "$FM_FAKE_AGY_DEAD_SCREEN" ;;
-    stale-footer) hold_then_trust "$FM_FAKE_AGY_STALE_SCREEN" ;;
-    stale-dialog) hold_then_trust "$FM_FAKE_AGY_STALE_DIALOG" ;;
-    *) printf 'shell starting\n$ \n' ;;
+    dead-shell) hold_then_trust 'agy: error: unknown model id' ;;
+    stale-footer|stale-dialog) hold_then_trust "$FM_FAKE_AGY_STARTUP_SCREEN" ;;
+    typed|'') printf 'shell starting\n$ \n' ;;
   esac
 }
 # A screen the pane holds for a few captures before the trust dialog renders,
@@ -185,6 +184,7 @@ case "${1:-}" in
       case "$literal" in
         *' -i '*)
           printf '%s\n' "$literal" >> "$FM_FAKE_LAUNCH_LOG"
+          printf '%s\n' "$literal" > "$FM_FAKE_AGY_STATE.launch"
           printf 'LAUNCH\n' >> "$FM_FAKE_AGY_KEY_LOG"
           printf 'typed\n' > "$FM_FAKE_AGY_STATE"
           ;;
@@ -264,8 +264,8 @@ run_spawn() {
     FM_FAKE_AGY_FIRST_SCREEN="${FM_FAKE_AGY_FIRST_SCREEN:-trust}" \
     FM_FAKE_AGY_PENDING_SCREEN="$AGY_PRELAUNCH_SCREEN" \
     FM_FAKE_AGY_DEAD_SCREEN="$AGY_DEAD_SHELL_SCREEN" \
-    FM_FAKE_AGY_STALE_SCREEN="$AGY_STALE_FOOTER_SCREEN" \
     FM_FAKE_AGY_STALE_DIALOG="$AGY_STALE_DIALOG_SCREEN" \
+    FM_FAKE_AGY_STARTUP_SCREEN="$AGY_STARTUP_SCREEN" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_AGY_TRUST_POLLS="${FM_AGY_TRUST_POLLS:-3}" FM_AGY_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
@@ -432,30 +432,8 @@ test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
     || fail "agy's idle footer was not recognized as agy's own"
   fm_agy_footer_present "$(agy_screen '' 'esc to cancel')" \
     || fail "agy's busy footer was not recognized as agy's own"
-  verdict=$(fm_composer_classify_screen "$caps" "$AGY_STALE_FOOTER_SCREEN" 3 probe-absent)
-  [ "$verdict" = empty ] \
-    || fail "the stale-footer case needs a dead pane the classifier reads empty, got '$verdict'"
-  ! fm_agy_footer_present "$AGY_STALE_FOOTER_SCREEN" \
-    || fail "a footer one row above a redrawn prompt was credited to a live agy"
-
-  # The relaunch shape: the previously accepted dialog sits directly above the
-  # freshly typed launch command, so the window must end at that prompt row and
-  # neither half of the dialog test may reach the rows above it.
   printf '%s\n' "$AGY_STALE_DIALOG_SCREEN" | grep -Fq 'Do you trust the contents of this project' \
     || fail "the stale-dialog case needs a screen that really holds a trust dialog"
-  fm_pane_live_rows "$AGY_STALE_DIALOG_SCREEN" \
-    | grep -Fq 'Do you trust the contents of this project' \
-    && fail "the live-rows window exposed a trust dialog from above the current prompt row"
-  fm_pane_live_rows "$AGY_STALE_DIALOG_SCREEN" \
-    | grep -Eq '^[[:space:]]*>[[:space:]]+Yes, I trust this folder[[:space:]]*$' \
-    && fail "the live-rows window exposed a stale accepted option row, so an Enter would fire blind"
-
-  # And the window must not cut a dialog that IS live: agy's own selected option
-  # carries a prompt glyph, so a boundary drawn at any prompt row would hide the
-  # question above it and the dialog could never be accepted.
-  fm_pane_live_rows "$AGY_LIVE_DIALOG_SCREEN" \
-    | grep -Fq 'Do you trust the contents of this project' \
-    || fail "the live-rows window cut the question off a dialog the pane is showing now"
 
   id=agy-dead-shell-z2d
   rec=$(make_spawn_case dead-shell "$id")

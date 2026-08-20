@@ -345,51 +345,20 @@ FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc to cancel'
 FM_DELIVERY_AGY_IDLE_REGEX_DEFAULT='[?] for shortcuts'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
-# fm_pane_live_rows: the rows a pane is CURRENTLY showing, out of a capture that
-# also carries scrollback. The single owner of that window, shared by every
-# check that must not be satisfied by something the pane has already moved past.
+# fm_agy_footer_present: 0 when the given ROWS carry one of agy's own two
+# rendered footers. This is the ONLY positive evidence in the fleet that an agy
+# process, rather than the shell it was launched from, painted them: the composer
+# verdict cannot carry it, because `empty` is also reachable through the
+# bare-glyph path below with no identity probe at all, so a dead shell whose
+# prompt row is a bare agent glyph reads `empty` on its own.
 #
-# The boundary is a PROMPT ROW, not a row count. What makes content stale is
-# that the shell has redrawn its prompt below it, and that can happen two rows
-# after an agent drew its last frame - a fixed count only hides stale content
-# once enough other rows have piled on top of it, which is exactly backwards.
-# So when the LAST non-blank row is a prompt row, either glyph family, bare or
-# carrying a freshly typed command, the window is that row and nothing above it.
-#
-# A prompt row higher up is deliberately NOT a boundary: `>` is a shell glyph,
-# and agy draws its selected option as `> Yes, I trust this folder`, so cutting
-# at the bottom-most prompt row anywhere would hide the question that row
-# belongs to and break the dialog read this window exists to protect. A prompt
-# row that still has content below it has not taken the screen back.
-#
-# FM_COMPOSER_LIVE_ROWS_MAX is the secondary bound, for a capture with no prompt
-# row at all, so unbounded scrollback cannot widen the window without limit. The
-# prompt row wins whenever both apply.
-FM_COMPOSER_LIVE_ROWS_MAX=12
-fm_pane_live_rows() {  # <pane-capture>
-  local rows last glyph
-  rows=$(printf '%s\n' "${1-}" | grep -v '^[[:space:]]*$') || rows=
-  [ -n "$rows" ] || return 0
-  last=$(printf '%s\n' "$rows" | tail -1)
-  if fm_composer_leading_prompt_glyph_var glyph "$last"; then
-    printf '%s\n' "$last"
-    return 0
-  fi
-  printf '%s\n' "$rows" | tail -"$FM_COMPOSER_LIVE_ROWS_MAX"
-}
-
-# fm_agy_footer_present: 0 when a pane capture is CURRENTLY showing one of agy's
-# own two rendered footers. This is the ONLY positive evidence in the fleet that
-# an agy process, rather than the shell it was launched from, painted a pane:
-# the composer verdict cannot carry it, because `empty` is also reachable
-# through the bare-glyph path below with no identity probe at all, so a dead
-# shell whose prompt row is a bare agent glyph reads `empty` on its own.
-#
-# The live-rows bound is load-bearing: a footer agy printed before it exited
-# would otherwise still match from a pane whose shell has since redrawn its
-# prompt, which is exactly the state this predicate exists to rule out.
-fm_agy_footer_present() {  # <pane-capture>
-  fm_pane_live_rows "${1-}" \
+# It applies no window of its own, deliberately. Only the caller knows which
+# rows are current for it, and a capture carries scrollback a previous agy
+# session's footer can still be sitting in; bin/fm-spawn.sh's trust wait passes
+# the rows agy has drawn since the launch it just typed. Handed a whole capture,
+# this matches that scrollback too.
+fm_agy_footer_present() {  # <pane-rows>
+  printf '%s\n' "${1-}" \
     | grep -qE "$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT|$FM_DELIVERY_AGY_IDLE_REGEX_DEFAULT"
 }
 
