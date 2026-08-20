@@ -7,7 +7,9 @@
 # workspace holding a registered Firstmate pointer, once from a workspace
 # holding none - and asserts the turn-end marker and the semantic busy record
 # move only for the registered one. That pair is the whole safety claim for
-# sharing one hook entry with the captain's own agy sessions.
+# sharing one hook entry with the captain's own agy sessions. It also proves
+# --add-dir's two load-bearing effects: it populates the payload's
+# workspacePaths, and it suppresses the folder-trust dialog.
 #
 # It is also the only proof of the busy half of the `agy-hook` source. agy has
 # no second busy source by design, so if `PreInvocation` ever stopped carrying a
@@ -75,29 +77,31 @@ run_agy() {  # <workspace> [--add-dir]
       >"$LAB/agy.out" 2>"$LAB/agy.err" )
 }
 
-# The interactive launch, in a real pane. This is fm-spawn's own command shape,
-# and the folder-trust dialog it hits on a fresh path is cleared the same way
-# fm-spawn clears it: an Enter only once the dialog's own text is on screen.
-# bin/fm-spawn.sh owns that handling; this repeats the prompt text because the
-# pane here is driven directly rather than through a spawn.
-run_agy_interactive() {  # <workspace>
-  local workspace=$1 pane
+AGY_TRUST_PROMPT='Do you trust the contents of this project'
+
+# The interactive launch fm-spawn actually ships, in a real pane, in a workspace
+# agy has never been trusted for. No dialog is answered here: `--add-dir`
+# suppresses it, and proving that is one of the things this file exists for.
+run_agy_interactive() {  # <workspace> [extra-args...]
+  local workspace=$1
+  shift
   "$REAL_TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -n control -c "$workspace" \
     || fail "could not start the isolated tmux server ($AGY_VERSION)"
   "$REAL_TMUX" -L "$SOCKET" new-window -d -t "$SESSION:" -n agy -c "$workspace" -- \
-    "$AGY_BIN" --dangerously-skip-permissions --add-dir "$workspace" \
+    "$AGY_BIN" --dangerously-skip-permissions "$@" \
     -i 'Reply with exactly: LIVE-OK' \
     || fail "could not launch agy interactively ($AGY_VERSION)"
-  for _ in $(seq 1 60); do
+}
+
+agy_pane_holds_trust_prompt() {  # <polls>
+  local pane i=0
+  while [ "$i" -lt "$1" ]; do
     pane=$("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$TARGET" -S -120 2>/dev/null || true)
-    case "$pane" in
-      *'Do you trust the contents of this project'*)
-        "$REAL_TMUX" -L "$SOCKET" send-keys -t "$TARGET" Enter
-        break
-        ;;
-    esac
+    case "$pane" in *"$AGY_TRUST_PROMPT"*) return 0 ;; esac
+    i=$((i + 1))
     sleep 0.5
   done
+  return 1
 }
 
 "$ROOT/bin/fm-agy-config.sh" install "$LAB/absent-skills" \
@@ -139,6 +143,31 @@ run_agy "$LAB/registered" \
   || fail "agy populated workspacePaths without --add-dir; fm-spawn's binding may be redundant now ($AGY_VERSION)"
 pass "agy still reports no workspace without --add-dir, so fm-spawn's binding is still required ($AGY_VERSION)"
 
+# 3b. --add-dir's SECOND load-bearing effect: it suppresses the folder-trust
+# dialog, which --dangerously-skip-permissions does not and which agy has no
+# --trust flag for. Both arms are interactive on purpose - headless `-p` renders
+# no dialog either, so asserting suppression from a `-p` run would pass just as
+# well with the flag removed. Two fresh never-trusted paths, one arm each, so
+# the absence in the first arm is attributable to the flag and not to the path
+# already being trusted.
+mkdir -p "$LAB/trust-with" "$LAB/trust-without"
+run_agy_interactive "$LAB/trust-without"
+agy_pane_holds_trust_prompt 60 \
+  || fail "a launch WITHOUT --add-dir showed no folder-trust dialog, so the suppression arm below proves nothing ($AGY_VERSION)"
+# Leave that arm refused rather than trusted: answering it would write the path
+# into agy's trustedWorkspaces and outlive the test.
+"$REAL_TMUX" -L "$SOCKET" send-keys -t "$TARGET" Down Enter 2>/dev/null || true
+"$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+
+run_agy_interactive "$LAB/trust-with" --add-dir "$LAB/trust-with"
+agy_pane_holds_trust_prompt 20 \
+  && fail "--add-dir no longer suppresses the folder-trust dialog; every unattended spawn would park on it ($AGY_VERSION)"
+jq -e --arg ws "$LAB/trust-with" '[.trustedWorkspaces[]? | strings] | index($ws) | not' \
+  "$HOME/.gemini/antigravity-cli/settings.json" >/dev/null 2>&1 \
+  || fail "a --add-dir launch wrote its workspace into agy's trustedWorkspaces; firstmate must write nothing there ($AGY_VERSION)"
+"$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+pass "--add-dir suppresses agy's folder-trust dialog, which a launch without it still shows ($AGY_VERSION)"
+
 # 4. The same guarded hook under the launch mode the adapter actually ships,
 # and the only live proof of its BUSY half.
 # `-i` keeps the session interactive, which is a different code path in agy than
@@ -155,7 +184,7 @@ pass "agy still reports no workspace without --add-dir, so fm-spawn's binding is
 # payload.workspacePaths guard, so a second event under source=agy-hook is proof
 # that agy populated that array for PreInvocation too, not only for Stop.
 rm -f "$STATE/live.turn-ended" "$STATE/live.busy-state"
-run_agy_interactive "$LAB/registered"
+run_agy_interactive "$LAB/registered" --add-dir "$LAB/registered"
 # Wait for the RECORD to settle, not for the marker. The installed hook touches
 # the turn-end marker before it execs the busy applier, so the marker appearing
 # proves nothing about the record yet and breaking on it would report a false

@@ -337,30 +337,7 @@ FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
 # ever decides. On an EMPTY agy composer the token therefore means a running
 # turn and nothing else.
 FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc to cancel'
-# agy's idle footer, the other half of that swap. It is not a delivery signal -
-# nothing classifies a pane busy from it - but the two together are the COMPLETE
-# set of footers agy's own TUI ever renders, which is what makes their union
-# usable as proof that a live agy drew a pane rather than a shell that outlived
-# it (verified live, agy 1.1.15).
-FM_DELIVERY_AGY_IDLE_REGEX_DEFAULT='[?] for shortcuts'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
-
-# fm_agy_footer_present: 0 when the given ROWS carry one of agy's own two
-# rendered footers. This is the ONLY positive evidence in the fleet that an agy
-# process, rather than the shell it was launched from, painted them: the composer
-# verdict cannot carry it, because `empty` is also reachable through the
-# bare-glyph path below with no identity probe at all, so a dead shell whose
-# prompt row is a bare agent glyph reads `empty` on its own.
-#
-# It applies no window of its own, deliberately. Only the caller knows which
-# rows are current for it, and a capture carries scrollback a previous agy
-# session's footer can still be sitting in; bin/fm-spawn.sh's trust wait passes
-# the rows agy has drawn since the launch it just typed. Handed a whole capture,
-# this matches that scrollback too.
-fm_agy_footer_present() {  # <pane-rows>
-  printf '%s\n' "${1-}" \
-    | grep -qE "$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT|$FM_DELIVERY_AGY_IDLE_REGEX_DEFAULT"
-}
 
 fm_busy_lines_match() {  # [harness]
   local harness=${1:-} lines regex

@@ -975,8 +975,14 @@ The hook publishes a busy event only when it has matched a registered worktree o
 
 ### Folder trust
 
-`--dangerously-skip-permissions` does NOT suppress the folder-trust dialog and agy exposes no `--trust` flag.
-A first launch in a not-yet-trusted path rendered:
+`--add-dir <worktree>` suppresses the folder-trust dialog.
+`--dangerously-skip-permissions` does NOT, and agy exposes no `--trust` flag, so the `--add-dir` firstmate already passes for the hook binding is the only thing standing between an unattended spawn and a blocking dialog.
+
+Two arms, agy 1.1.15, 2026-08-20, one interactive launch each in its own fresh never-trusted path, both in a real tmux pane.
+WITH `--add-dir`: no dialog rendered at any point, the initial prompt was processed immediately, and `~/.gemini/antigravity-cli/settings.json` gained no `trustedWorkspaces` entry.
+WITHOUT `--add-dir`: the dialog rendered and the session waited on it.
+
+What that second arm rendered:
 
 ```text
 Do you trust the contents of this project?
@@ -989,9 +995,10 @@ Antigravity CLI requires permission to read, edit, and execute files here.
   ↑/↓ Navigate · enter Confirm
 ```
 
-One Enter cleared it.
-The decision persists in `~/.gemini/antigravity-cli/settings.json` under `trustedWorkspaces` and does NOT cascade to subdirectories: that list held `/Users/<user>` and still recorded a separate entry for a worktree beneath it.
-Every task gets a fresh worktree path, so every spawn meets this dialog, and `fm-spawn` accepts it in the pane only after the dialog's own text is on screen and the trusting option is the selected one.
+One Enter clears it, and the decision persists in `~/.gemini/antigravity-cli/settings.json` under `trustedWorkspaces`, which does NOT cascade to subdirectories: that list held `/Users/<user>` and still recorded a separate entry for a worktree beneath it.
+None of that is reachable from firstmate's launch shape, which always carries `--add-dir`.
+`fm-spawn` therefore accepts nothing in the pane and writes no entry to that store.
+`tests/fm-agy-signals-live-e2e.test.sh` re-runs both arms, so a change that drops `--add-dir` fails there instead of silently parking every spawn on a dialog.
 
 ### Composer and rendered footer
 
@@ -1033,7 +1040,8 @@ A live agy crewmate then answered `/no-mistakes` with `no-mistakes axi run`, the
 
 ### End to end
 
-A real `bin/fm-spawn.sh <id> <project> --scout --harness agy --model gemini-3.7-flash-low` cleared the trust dialog on its own, processed its brief, recorded `state=idle source=agy-hook` in the busy record, and touched `state/<id>.turn-ended`.
+A real `bin/fm-spawn.sh <id> <project> --scout --harness agy --model gemini-3.7-flash-low` met no folder-trust dialog at all, because its launch carries `--add-dir`, then processed its brief, recorded `state=idle source=agy-hook` in the busy record, and touched `state/<id>.turn-ended`.
+The dialog being unable to render is a stronger result than clearing it: there is no screen to accept, so no pane keystroke and no trust-store write.
 Read mid-turn, that same task's record showed `seq=6 state=busy source=agy-hook event=agy-busy` and `bin/fm-crew-state.sh` reported `working (agy-hook)`, which is the observation crediting the `PreInvocation` half.
 An agy session started by hand in an unregistered workspace, with the same global hook installed, left both untouched.
 `bin/fm-control.sh <id> interrupt` ended a running turn (footer returned to `? for shortcuts`) and reported `cancel=unconfirmed`, which is correct: agy fires no hook for a manual interrupt, so the busy record stayed at its last recorded state exactly as Claude's does.

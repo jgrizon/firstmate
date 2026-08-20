@@ -1186,15 +1186,19 @@ launch_template() {
     # agy (Antigravity CLI). -i / --prompt-interactive runs the initial prompt AND
     # keeps the session interactive, which is the supervised pane firstmate needs;
     # -p / --print is headless and would exit after one turn, so it is never used.
-    # --dangerously-skip-permissions auto-approves every tool request, but it does
-    # NOT cover the folder-trust dialog, which agy shows on every path it has not
-    # trusted before and therefore on every fresh task worktree (verified, agy
-    # 1.1.15). That dialog is cleared after launch below rather than by writing
-    # agy's own managed trustedWorkspaces store.
-    # --add-dir pins the task worktree into the session's workspace set, which is
-    # what makes the guarded global turn-end hook usable: agy's hook payload
-    # carries workspacePaths, and without --add-dir that array is EMPTY even when
-    # the launch cwd is a git repo, so the per-task guard would never match.
+    # --dangerously-skip-permissions auto-approves every tool request. It does
+    # NOT cover the folder-trust dialog; --add-dir below is what does.
+    # --add-dir pins the task worktree into the session's workspace set, and it
+    # is load-bearing TWICE over. It is what makes the guarded global turn-end
+    # hook usable: agy's hook payload carries workspacePaths, and without
+    # --add-dir that array is EMPTY even when the launch cwd is a git repo, so
+    # the per-task guard would never match. It ALSO suppresses agy's folder-trust
+    # dialog, which --dangerously-skip-permissions does not and for which agy
+    # exposes no --trust flag (verified live on two fresh never-trusted paths,
+    # agy 1.1.15, 2026-08-20: with the flag no dialog renders and the initial
+    # prompt runs immediately; without it the dialog blocks the session).
+    # Dropping the flag would therefore break the hook guard AND leave every
+    # unattended spawn parked on a dialog nobody is there to answer.
     # agy encodes reasoning level in the model id itself, so the shared effort
     # axis is deliberately omitted and stays in task metadata only.
     agy) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u CURSOR_AGENT -u CURSOR_INVOKED_AS __AGYBIN__ --dangerously-skip-permissions --add-dir __WORKTREE__ __MODELFLAG__-i "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -2258,139 +2262,6 @@ kimi_wait_for_delivery() {
   return 1
 }
 
-# agy shows a folder-trust dialog on every path it has not trusted before, and
-# --dangerously-skip-permissions does NOT suppress it (verified, agy 1.1.15).
-# Every task gets a fresh worktree, so every spawn hits it. The decision persists
-# in agy's own trustedWorkspaces store, which firstmate deliberately does not
-# write: that store is agy's managed config, and the same high-blast-radius rule
-# that keeps firstmate out of grok's trust store applies here.
-#
-# So the dialog is cleared the way codex's and pi's are - by accepting it in the
-# pane - with two guards that keep it honest. The Enter is sent ONLY after the
-# dialog's own text is on screen, so a pane that never showed one is never typed
-# into; and the accepted option is verified to be the trusting one, so a future
-# reordering of the choices makes the spawn fail loudly instead of silently
-# selecting "No, exit".
-FM_AGY_TRUST_PROMPT='Do you trust the contents of this project'
-FM_AGY_TRUST_ACCEPT='Yes, I trust this folder'
-
-agy_capture() {
-  fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
-}
-
-# The rows agy has drawn SINCE THIS LAUNCH, and the window every check below
-# reads. `spawn_send_literal` types $LAUNCH into the pane, so the LAST occurrence
-# of that literal is the boundary between whatever the pane held before and
-# everything this incarnation has painted.
-#
-# Nothing weaker works here. A relaunch adopts its pane without clearing it, so
-# the previous incarnation's accepted trust dialog - trusting option still marked
-# selected - and its rendered footer are both still in the capture. No row count
-# separates them from the new launch, and neither does a prompt row: agy prints
-# its own rows below the typed command a fraction of a second later, and the
-# boundary has to survive that. Matching the launch itself is what does.
-#
-# The comparison ignores whitespace on both sides because the pane WRAPS a long
-# launch command across rows and pads them; squashing both makes the match
-# independent of where the terminal chose to break it.
-#
-# Printing nothing when the literal is absent is deliberate: that is not proof of
-# anything, so the caller keeps polling rather than widening to a looser window
-# that a previous incarnation's rows could satisfy.
-agy_rows_since_launch() {  # <pane-capture> <launch-literal>
-  printf '%s\n' "${1-}" | FM_AGY_LAUNCH_NEEDLE="${2-}" awk '
-    function squash(s) { gsub(/[[:space:]]/, "", s); return s }
-    { rows[NR] = $0; flat = flat squash($0); ends[NR] = length(flat) }
-    END {
-      needle = squash(ENVIRON["FM_AGY_LAUNCH_NEEDLE"])
-      if (needle == "") exit
-      last = 0
-      start = 1
-      while ((at = index(substr(flat, start), needle)) > 0) {
-        last = start + at + length(needle) - 2
-        start = start + at
-      }
-      if (last == 0) exit
-      for (i = 1; i <= NR; i++) if (ends[i] >= last) { anchor = i; break }
-      for (i = anchor + 1; i <= NR; i++) print rows[i]
-    }
-  '
-}
-
-# 0 when the trust dialog is showing with the trusting option selected. agy
-# marks the selected row with a leading `>` (verified, agy 1.1.15).
-agy_trust_dialog_ready() {  # <plain-pane-capture>
-  printf '%s\n' "$1" | grep -Fq "$FM_AGY_TRUST_PROMPT" || return 1
-  printf '%s\n' "$1" | grep -Eq "^[[:space:]]*>[[:space:]]+${FM_AGY_TRUST_ACCEPT}[[:space:]]*\$"
-}
-
-# 0 when the dialog has drawn a selected option row at all, whatever it names.
-# agy writes the question first and the options a moment later, so this is what
-# separates "the choices were reordered" - judgeable, and a refusal - from
-# "the choices are not on screen yet", which is just a frame to wait through.
-# Deliberately not tied to either option's wording: a release that RENAMES the
-# trusting option still draws a marker, so this reports the frame judgeable,
-# agy_trust_dialog_ready fails on the unrecognized text, and the spawn refuses
-# on that first drawn frame. Loud and immediate is the right outcome there -
-# firstmate must never read a rename as consent.
-agy_trust_selection_drawn() {  # <plain-pane-capture>
-  printf '%s\n' "$1" | grep -Eq '^[[:space:]]*>[[:space:]]+[^[:space:]]'
-}
-
-# Clear the trust dialog if one appears. Returns 0 when the pane is usable -
-# dialog accepted, or no dialog within the window - and 1 only when a dialog IS
-# showing with something other than the trusting option selected.
-#
-# A refusal is never taken on one read of a half-drawn screen. agy paints the
-# question before the options, and polls are 0.5s apart, so a frame carrying the
-# prompt with no selected row yet says nothing about which option is preselected
-# and the wait simply continues. The refusal fires once the screen is judgeable
-# - a selected row IS drawn and it is not the trusting one - or once the budget
-# expires having seen the prompt without the trusting row ever appearing. Both
-# forms still catch a genuine reordering; neither fires on a partial render.
-# This is the same rule the worktree wait below applies for the same reason: one
-# transient pane read is not evidence.
-#
-# The early exit takes POSITIVE proof that agy itself painted the pane, never
-# the mere absence of `unknown`, and never a composer verdict. No verdict is
-# that proof: `pending` is what the captain's own `❯` prompt row reads as while
-# it still carries the launch command, and `empty` is what the SAME row reads as
-# once agy has died and the shell has redrawn a bare prompt, because the
-# classifier's bare-glyph path answers `empty` with no identity probe at all.
-# Believing either would leave the dialog rendering with nobody to accept it and
-# the spawn reporting success on a wedged or dead pane.
-#
-# agy's own rendered footer is the one signal here no shell can emit, so it is
-# the whole gate. Either of its two tokens counts, because the launch rides in
-# on `-i` and agy is therefore mid-turn (`esc to cancel`) for the whole
-# post-launch window; requiring the idle token, or requiring an idle-only
-# composer verdict alongside it, would shut the gate exactly when it is needed
-# and cost every spawn its full poll budget. bin/fm-composer-lib.sh owns that
-# signature; the rows it is asked about are bounded here, by the launch above.
-agy_clear_trust_dialog() {
-  local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
-  local prompt_seen=0
-  while [ "$i" -lt "$max" ]; do
-    pane=$(agy_rows_since_launch "$(agy_capture)" "$LAUNCH")
-    if [ -n "$pane" ]; then
-      if agy_trust_dialog_ready "$pane"; then
-        spawn_send_key "$T" Enter
-        return 0
-      fi
-      if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
-        prompt_seen=1
-        agy_trust_selection_drawn "$pane" && return 1
-      elif fm_agy_footer_present "$pane"; then
-        return 0
-      fi
-    fi
-    i=$((i + 1))
-    [ "$i" -ge "$max" ] || sleep "$interval"
-  done
-  [ "$prompt_seen" -eq 0 ] || return 1
-  return 0
-}
-
 kimi_spawn_fail() {  # <detail>
   printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
   echo "error: $1; inspect window $T" >&2
@@ -3046,13 +2917,6 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   spawn_herdr_presentation_order_lock_release
 fi
 spawn_send_key "$T" Enter
-if [ "$HARNESS" = agy ]; then
-  if ! agy_clear_trust_dialog; then
-    printf 'failed: %s\n' "agy folder-trust dialog did not preselect '$FM_AGY_TRUST_ACCEPT'" >> "$STATE/$ID.status"
-    echo "error: agy's folder-trust dialog is showing with an unexpected selection; inspect window $T rather than accepting it blind" >&2
-    exit 1
-  fi
-fi
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"

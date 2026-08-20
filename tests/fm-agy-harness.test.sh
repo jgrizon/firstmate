@@ -37,48 +37,6 @@ agy_screen() {  # <composer-text> <footer> [task-strip]
   printf '%s                       Gemini 3.7 Flash · low\n' "$2"
 }
 
-# The pane's pre-launch screen: the captain's own `❯` prompt row still carrying
-# the typed launch command, with agy's startup output wrapping below it. The
-# shared classifier reads this as `pending` on its own (asserted below) although
-# agy has drawn nothing yet. The shipped gate accepts no composer verdict at
-# all - agy's own rendered footer is the whole of it - and this screen has none.
-AGY_PRELAUNCH_SCREEN=$(printf '%s\n' \
-  '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"' \
-  'Antigravity CLI 1.1.15' \
-  'loading workspace...')
-
-# The pane after agy DIED during startup and the captain's shell redrew a bare
-# prompt. The classifier reads this as `empty` through its bare-glyph path with
-# no identity probe at all (asserted below), so an `empty` verdict alone is not
-# proof agy is up; only agy's own footer, which this screen has none of, is.
-AGY_DEAD_SHELL_SCREEN=$(printf '%s\n' \
-  '❯ env -u CLAUDECODE agy --dangerously-skip-permissions -i "brief"' \
-  'agy: error: unknown model id' \
-  '❯ ')
-
-# What a relaunch adopts: the PREVIOUS incarnation's already-accepted trust
-# dialog, trusting option and all, still in the pane. The fake renders this
-# ABOVE the launch command fm-spawn types, which is where a relaunch really
-# leaves it. Matching those rows would fire an Enter into a pane where the new
-# agy has not started, and the dialog that renders a moment later would never be
-# accepted - a wedged worker reported as spawned.
-AGY_STALE_DIALOG_SCREEN=$(
-  printf 'Accessing workspace:\n'
-  printf '/tmp/a-previous-worktree\n'
-  printf 'Do you trust the contents of this project?\n'
-  printf '> Yes, I trust this folder\n'
-  printf '  No, exit\n'
-)
-
-# What agy prints in the moments after a launch, before it has drawn anything
-# of its own. The stale cases render this BELOW the typed launch command: a
-# boundary that only holds while the command is the bottom row would reopen the
-# instant this arrives, so every stale fixture carries it.
-AGY_STARTUP_SCREEN=$(
-  printf 'Antigravity CLI 1.1.15\n'
-  printf 'loading workspace...\n'
-)
-
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -88,87 +46,29 @@ set -u
 printf '%s\n' "$*" >> "$FM_FAKE_TMUX_CALL_LOG"
 state=$(cat "$FM_FAKE_AGY_STATE" 2>/dev/null || true)
 rule() { printf '────────────────────────────────────────\n'; }
-# The pane the real gate reads: whatever history it already held, then the
-# launch command fm-spawn typed, then what agy has drawn since. Everything
-# above that command belongs to a previous incarnation.
+# agy is MID-TURN the moment it is up: the brief rode in on the launch command,
+# so its composer sits under a busy footer. Nothing in the spawn path reads this
+# pane - agy needs no post-launch delivery or readiness gate - but the pane a
+# real launch produces is what the fake should show.
 fake_screen() {
   case "$state" in
-    stale-footer)
-      printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
-      printf '%s\n' "$FM_FAKE_AGY_DEAD_SCREEN"
-      ;;
-    stale-dialog) printf '%s\n' "$FM_FAKE_AGY_STALE_DIALOG" ;;
-  esac
-  case "$state" in
-    typed|'') : ;;
-    *) printf '❯ %s\n' "$(cat "$FM_FAKE_AGY_STATE.launch" 2>/dev/null || true)" ;;
-  esac
-  case "$state" in
-    trust)
-      printf 'Accessing workspace:\n\n%s\n\n' "$FM_FAKE_PANE_PATH"
-      printf 'Do you trust the contents of this project?\n\n'
-      printf '%s\n' "${FM_FAKE_AGY_TRUST_ROWS:-> Yes, I trust this folder
-  No, exit}"
-      printf '\n  ↑/↓ Navigate · enter Confirm\n'
-      ;;
-    half-drawn)
-      # agy paints the question first and the options a moment later, so a poll
-      # can land on this frame. It says nothing about which option is
-      # preselected, and must not be read as a reordering.
-      printf 'Accessing workspace:\n\n%s\n\n' "$FM_FAKE_PANE_PATH"
-      printf 'Do you trust the contents of this project?\n\n'
-      printf 'Antigravity CLI requires permission to read, edit, and execute files here.\n'
-      printf 'x' >> "$FM_FAKE_AGY_STATE.held"
-      if [ "$(wc -c < "$FM_FAKE_AGY_STATE.held" | tr -d ' ')" -ge 2 ]; then
-        printf 'trust\n' > "$FM_FAKE_AGY_STATE"
-      fi
-      ;;
     running)
-      # A real `-i` launch is MID-TURN the moment agy is up: the brief rode in
-      # on the launch command, so the footer agy actually renders here is the
-      # busy one and the composer verdict is `unknown`, not `empty`.
       rule; printf '> \n'; rule
       printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
       ;;
-    pending) hold_then_trust "$FM_FAKE_AGY_PENDING_SCREEN" ;;
-    dead-shell) hold_then_trust 'agy: error: unknown model id' ;;
-    stale-footer|stale-dialog) hold_then_trust "$FM_FAKE_AGY_STARTUP_SCREEN" ;;
-    typed|'') printf 'shell starting\n$ \n' ;;
+    *) printf 'shell starting\n$ \n' ;;
   esac
-}
-# A screen the pane holds for a few captures before the trust dialog renders,
-# so the wait has to survive it rather than mistake it for a started agy.
-hold_then_trust() {  # <screen>
-  printf '%s\n' "$1"
-  printf 'x' >> "$FM_FAKE_AGY_STATE.held"
-  if [ "$(wc -c < "$FM_FAKE_AGY_STATE.held" | tr -d ' ')" -ge 4 ]; then
-    printf 'trust\n' > "$FM_FAKE_AGY_STATE"
-  fi
 }
 fake_cursor_y() {
   case "$state" in
     running) printf '1\n' ;;
-    dead-shell) printf '2\n' ;;
-    stale-footer) printf '3\n' ;;
-    stale-dialog) printf '5\n' ;;
-    half-drawn) printf '6\n' ;;
     *) printf '0\n' ;;
-  esac
-}
-# The pane's foreground command, which is how fm_tmux_composer_identity answers
-# for agy once the real binary is up and how it answers for nothing once the
-# process is gone.
-fake_current_command() {
-  case "$state" in
-    running) printf 'agy\n' ;;
-    *) printf 'bash\n' ;;
   esac
 }
 
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "$FM_FAKE_PANE_PATH"; exit 0 ;;
   *"#{cursor_y}"*) fake_cursor_y; exit 0 ;;
-  *"#{pane_current_command}"*) fake_current_command; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -184,7 +84,6 @@ case "${1:-}" in
       case "$literal" in
         *' -i '*)
           printf '%s\n' "$literal" >> "$FM_FAKE_LAUNCH_LOG"
-          printf '%s\n' "$literal" > "$FM_FAKE_AGY_STATE.launch"
           printf 'LAUNCH\n' >> "$FM_FAKE_AGY_KEY_LOG"
           printf 'typed\n' > "$FM_FAKE_AGY_STATE"
           ;;
@@ -197,8 +96,7 @@ case "${1:-}" in
         # The launch Enter starts agy; the NEXT Enter is the one that clears a
         # trust dialog, exactly as the real pane sequences them.
         case "$state" in
-          typed) printf '%s\n' "${FM_FAKE_AGY_FIRST_SCREEN:-trust}" > "$FM_FAKE_AGY_STATE" ;;
-          trust) printf 'running\n' > "$FM_FAKE_AGY_STATE" ;;
+          typed) printf 'running\n' > "$FM_FAKE_AGY_STATE" ;;
         esac
         ;;
     esac
@@ -260,14 +158,7 @@ run_spawn() {
     FM_FAKE_LAUNCH_LOG="$case_dir/launch.log" \
     FM_FAKE_AGY_KEY_LOG="$case_dir/keys.log" \
     FM_FAKE_AGY_STATE="$case_dir/agy.state" \
-    FM_FAKE_AGY_TRUST_ROWS="${FM_FAKE_AGY_TRUST_ROWS:-}" \
-    FM_FAKE_AGY_FIRST_SCREEN="${FM_FAKE_AGY_FIRST_SCREEN:-trust}" \
-    FM_FAKE_AGY_PENDING_SCREEN="$AGY_PRELAUNCH_SCREEN" \
-    FM_FAKE_AGY_DEAD_SCREEN="$AGY_DEAD_SHELL_SCREEN" \
-    FM_FAKE_AGY_STALE_DIALOG="$AGY_STALE_DIALOG_SCREEN" \
-    FM_FAKE_AGY_STARTUP_SCREEN="$AGY_STARTUP_SCREEN" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
-    FM_AGY_TRUST_POLLS="${FM_AGY_TRUST_POLLS:-3}" FM_AGY_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
     "$SPAWN" "$id" "$proj" --scout --harness agy "$@" 2>&1
 }
@@ -335,160 +226,6 @@ test_agy_launch_shape_and_wiring() {
     "agy spawn did not install its global hook"
   assert_present "$HOME_DIR/state/$id.busy-gen" "agy spawn did not arm the busy contract"
   pass "fm-spawn: agy launches interactively with --add-dir and registers guarded per-task wiring"
-}
-
-test_agy_trust_dialog_is_accepted_only_when_preselected() {
-  local id rec out rc keys
-  id=agy-trust-z2
-  rec=$(make_spawn_case trust "$id")
-  read_spawn_record "$rec"
-  out=$(run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id")
-  rc=$?
-  expect_code 0 "$rc" "agy spawn should clear a preselected trust dialog"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 2 ] || fail "agy spawn should send exactly the launch Enter plus one trust Enter (got $keys)"
-  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
-    || fail "the trust dialog was not actually cleared"
-
-  # A pane that never shows the dialog must not be typed into at all.
-  id=agy-trust-none-z2b
-  rec=$(make_spawn_case trust-none "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=running run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn should succeed when no trust dialog appears"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 1 ] || fail "agy spawn typed into a pane showing no trust dialog (got $keys Enters)"
-
-  # A frame carrying the question with no option rows yet must be waited
-  # through, not refused: the dialog it becomes is the one to accept.
-  id=agy-trust-half-drawn-z2h
-  rec=$(make_spawn_case trust-half-drawn "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=half-drawn FM_AGY_TRUST_POLLS=8 run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn refused a trust dialog that was only half drawn on the first read"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 2 ] \
-    || fail "the half-drawn dialog was not cleared once it finished drawing (got $keys Enters)"
-  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
-    || fail "the dialog that followed a half-drawn frame was never accepted"
-
-  id=agy-trust-bad-z3
-  rec=$(make_spawn_case trust-bad "$id")
-  read_spawn_record "$rec"
-  rc=0
-  out=$(FM_FAKE_AGY_TRUST_ROWS='  Yes, I trust this folder
-> No, exit' run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id") || rc=$?
-  [ "$rc" -ne 0 ] || fail "agy spawn accepted a trust dialog whose selection was not the trusting one"
-  assert_contains "$out" "unexpected selection" "agy trust refusal lacked its concrete reason"
-  pass "fm-spawn: agy accepts its trust dialog only with the trusting option preselected"
-}
-
-# A composer verdict of `pending` is reachable from the pane BEFORE agy has
-# drawn anything, so it is not proof agy started - and neither is any other
-# verdict, which is why the wait turns on agy's own rendered footer instead. A
-# wait that stopped on `pending` would leave the dialog rendering with nobody to
-# accept it and report the spawn as a success.
-test_agy_trust_wait_is_not_ended_by_a_pending_pre_launch_screen() {
-  local id rec caps verdict keys
-  # shellcheck source=/dev/null
-  . "$ROOT/bin/fm-composer-lib.sh"
-  caps=$(printf 'styled=1\ncursor=1\nidentity=1\nrows=0\n')
-  verdict=$(fm_composer_classify_screen "$caps" "$AGY_PRELAUNCH_SCREEN" 0)
-  [ "$verdict" = pending ] \
-    || fail "this case needs a pre-launch screen that classifies pending, got '$verdict'"
-
-  id=agy-trust-late-z2c
-  rec=$(make_spawn_case trust-late "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=pending FM_AGY_TRUST_POLLS=8 run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn should succeed when the trust dialog renders after a slow start"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 2 ] \
-    || fail "a pending pre-launch screen ended the trust wait early (got $keys Enters)"
-  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
-    || fail "the late trust dialog was never cleared"
-  pass "fm-spawn: agy's trust wait survives a pending pre-launch screen and clears the late dialog"
-}
-
-# `empty` is NOT proof agy started: the classifier's bare-glyph path reaches it
-# with no identity probe, so a pane whose agy died and whose shell redrew a bare
-# prompt reads `empty` on its own. agy's own rendered footer on the LIVE rows is
-# the one thing a shell cannot forge, so that is the whole gate - and a footer
-# left behind in scrollback does not count either.
-test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
-  local id rec caps verdict keys captures
-  # shellcheck source=/dev/null
-  . "$ROOT/bin/fm-composer-lib.sh"
-  caps=$(printf 'styled=1\ncursor=1\nidentity=1\nrows=0\n')
-  verdict=$(fm_composer_classify_screen "$caps" "$AGY_DEAD_SHELL_SCREEN" 2 probe-absent)
-  [ "$verdict" = empty ] \
-    || fail "this case needs a dead-shell screen the classifier reads empty, got '$verdict'"
-  ! fm_agy_footer_present "$AGY_DEAD_SHELL_SCREEN" \
-    || fail "a dead shell was credited with agy's own footer"
-  fm_agy_footer_present "$(agy_screen '' '? for shortcuts')" \
-    || fail "agy's idle footer was not recognized as agy's own"
-  fm_agy_footer_present "$(agy_screen '' 'esc to cancel')" \
-    || fail "agy's busy footer was not recognized as agy's own"
-  printf '%s\n' "$AGY_STALE_DIALOG_SCREEN" | grep -Fq 'Do you trust the contents of this project' \
-    || fail "the stale-dialog case needs a screen that really holds a trust dialog"
-
-  id=agy-dead-shell-z2d
-  rec=$(make_spawn_case dead-shell "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=dead-shell FM_AGY_TRUST_POLLS=8 run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn should succeed when the dialog renders after a failed-looking start"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 2 ] \
-    || fail "a dead shell reading empty ended the trust wait early (got $keys Enters)"
-  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
-    || fail "the trust dialog after a dead-looking screen was never cleared"
-
-  id=agy-stale-footer-z2f
-  rec=$(make_spawn_case stale-footer "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=stale-footer FM_AGY_TRUST_POLLS=8 run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn should succeed when the dialog renders after a stale-footer screen"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 2 ] \
-    || fail "a footer left in scrollback ended the trust wait early (got $keys Enters)"
-  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
-    || fail "the trust dialog after a stale-footer screen was never cleared"
-
-  # And the gate must still FIRE on a real agy pane, or every spawn would just
-  # burn its whole poll budget. The pane a real `-i` launch produces is MID-TURN
-  # - busy footer, composer `unknown` - so that is the state asserted here.
-  # A dialog left in a relaunch pane's scrollback must not end the wait either,
-  # and must not draw an Enter: the dialog that renders afterwards is the one
-  # that has to be accepted.
-  id=agy-stale-dialog-z2g
-  rec=$(make_spawn_case stale-dialog "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=stale-dialog FM_AGY_TRUST_POLLS=8 run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn should succeed when a stale dialog sits above the live rows"
-  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
-    || fail "a trust dialog matched out of scrollback, so the one that really rendered was never accepted"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 2 ] \
-    || fail "a stale dialog in scrollback changed the Enters sent (got $keys)"
-
-  id=agy-started-z2e
-  rec=$(make_spawn_case started "$id")
-  read_spawn_record "$rec"
-  FM_FAKE_AGY_FIRST_SCREEN=running FM_AGY_TRUST_POLLS=20 run_spawn \
-    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
-    || fail "agy spawn should succeed when agy comes up with no trust dialog"
-  keys=$(post_launch_enters "$CASE_DIR")
-  [ "$keys" -eq 1 ] || fail "agy spawn typed into a pane showing no trust dialog (got $keys)"
-  captures=$(grep -c '^capture-pane' "$CASE_DIR/tmux-calls.log")
-  [ "$captures" -lt 20 ] \
-    || fail "a started agy did not satisfy the trust-wait gate; the poll ran on ($captures captures)"
-  pass "fm-spawn: agy's trust wait rejects an empty-reading dead shell and stops on a real agy pane"
 }
 
 test_agy_secondmate_is_refused() {
@@ -915,9 +652,6 @@ test_agy_tmux_liveness_classifies_the_agent() {
 }
 
 test_agy_launch_shape_and_wiring
-test_agy_trust_dialog_is_accepted_only_when_preselected
-test_agy_trust_wait_is_not_ended_by_a_pending_pre_launch_screen
-test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty
 test_agy_secondmate_is_refused
 test_agy_missing_binary_refuses_before_pane_creation
 test_agy_teardown_removes_pointer_and_registry_token
