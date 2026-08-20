@@ -217,6 +217,24 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+# direct-PR is the only mode where the worker opens the PR itself, so the
+# fork-base warning belongs there, next to the push-and-PR instruction it
+# guards (issue: worker PRs landed against a fork's upstream parent instead
+# of the fork itself because `gh pr create` defaults a fork's base upstream).
+test_direct_pr_dod_warns_about_fork_base() {
+  local home brief
+  home="$TMP_ROOT/fork-warning-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-fork-w1 some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "fm-brief.sh --mode direct-PR exited non-zero"
+  brief="$home/data/brief-fork-w1/brief.md"
+  assert_grep "upstream" "$brief" "direct-PR brief missing the fork upstream-remote check"
+  assert_grep "--repo <owner>/<repo> --base <branch>" "$brief" \
+    "direct-PR brief missing the explicit --repo/--base instruction for forks"
+  pass "fm-brief.sh: direct-PR DOD warns about fork PR base defaulting"
+}
+
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
@@ -745,6 +763,7 @@ test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_direct_pr_dod_warns_about_fork_base
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply

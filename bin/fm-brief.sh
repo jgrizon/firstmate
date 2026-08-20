@@ -425,6 +425,7 @@ case "$MODE" in
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
+Before opening the PR, run \`git remote -v\`: an \`upstream\` remote means this checkout is a fork, and \`gh pr create\` defaults a fork's base to the upstream parent repo instead of your own. On a fork, always pass \`--repo <owner>/<repo> --base <branch>\` read from \`origin\`, never from memory.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
