@@ -98,6 +98,18 @@ fake_screen() {
   No, exit}"
       printf '\n  ↑/↓ Navigate · enter Confirm\n'
       ;;
+    half-drawn)
+      # agy paints the question first and the options a moment later, so a poll
+      # can land on this frame. It says nothing about which option is
+      # preselected, and must not be read as a reordering.
+      printf 'Accessing workspace:\n\n%s\n\n' "$FM_FAKE_PANE_PATH"
+      printf 'Do you trust the contents of this project?\n\n'
+      printf 'Antigravity CLI requires permission to read, edit, and execute files here.\n'
+      printf 'x' >> "$FM_FAKE_AGY_STATE.held"
+      if [ "$(wc -c < "$FM_FAKE_AGY_STATE.held" | tr -d ' ')" -ge 2 ]; then
+        printf 'trust\n' > "$FM_FAKE_AGY_STATE"
+      fi
+      ;;
     running)
       # A real `-i` launch is MID-TURN the moment agy is up: the brief rode in
       # on the launch command, so the footer agy actually renders here is the
@@ -127,6 +139,7 @@ fake_cursor_y() {
     dead-shell) printf '2\n' ;;
     stale-footer) printf '15\n' ;;
     stale-dialog) printf '17\n' ;;
+    half-drawn) printf '6\n' ;;
     *) printf '0\n' ;;
   esac
 }
@@ -333,6 +346,20 @@ test_agy_trust_dialog_is_accepted_only_when_preselected() {
     || fail "agy spawn should succeed when no trust dialog appears"
   keys=$(post_launch_enters "$CASE_DIR")
   [ "$keys" -eq 1 ] || fail "agy spawn typed into a pane showing no trust dialog (got $keys Enters)"
+
+  # A frame carrying the question with no option rows yet must be waited
+  # through, not refused: the dialog it becomes is the one to accept.
+  id=agy-trust-half-drawn-z2h
+  rec=$(make_spawn_case trust-half-drawn "$id")
+  read_spawn_record "$rec"
+  FM_FAKE_AGY_FIRST_SCREEN=half-drawn FM_AGY_TRUST_POLLS=8 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
+    || fail "agy spawn refused a trust dialog that was only half drawn on the first read"
+  keys=$(post_launch_enters "$CASE_DIR")
+  [ "$keys" -eq 2 ] \
+    || fail "the half-drawn dialog was not cleared once it finished drawing (got $keys Enters)"
+  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
+    || fail "the dialog that followed a half-drawn frame was never accepted"
 
   id=agy-trust-bad-z3
   rec=$(make_spawn_case trust-bad "$id")
@@ -612,6 +639,11 @@ test_agy_global_config_fails_closed_on_unsafe_shared_files() {
 # The guarded hook is the whole reason one global entry can be shared with the
 # captain's own agy sessions. Drive it with real payloads: a registered
 # workspace fires, and an unregistered one does not.
+#
+# Every invocation below runs the hook WITHOUT FM_AGY_CONFIG_DIR and under a HOME
+# holding no agy config, because the real hook runs in whatever environment agy
+# inherited from its pane rather than in firstmate's. Finding its registry anyway
+# is the point: the installer bakes that path in.
 test_agy_hook_requires_a_registered_workspace_token() {
   local dir config_dir hook registry token turnend state busy_gen payload rc out
   dir="$TMP_ROOT/hook-guard"
@@ -632,14 +664,14 @@ test_agy_hook_requires_a_registered_workspace_token() {
 
   payload=$(printf '{"fullyIdle":true,"workspacePaths":["%s"]}' "$dir/outsider")
   rc=0
-  out=$(printf '%s' "$payload" | HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+  out=$(printf '%s' "$payload" | env -u FM_AGY_CONFIG_DIR HOME="$dir/no-agy-config" \
     PATH="$(dirname "$JQ_BIN"):$BASE_PATH" bash "$hook" idle 2>&1) || rc=$?
   expect_code 0 "$rc" "the agy hook must always exit zero"
   [ -z "$out" ] || fail "the agy hook printed output for an unregistered workspace: $out"
   assert_absent "$turnend" "an unregistered workspace fired this task's turn-end marker"
 
   payload=$(printf '{"fullyIdle":true,"workspacePaths":["%s"]}' "$dir/registered")
-  printf '%s' "$payload" | HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+  printf '%s' "$payload" | env -u FM_AGY_CONFIG_DIR HOME="$dir/no-agy-config" \
     PATH="$(dirname "$JQ_BIN"):$BASE_PATH" bash "$hook" idle >/dev/null 2>&1 \
     || fail "the agy hook must always exit zero"
   assert_present "$turnend" "a registered workspace did not fire the turn-end marker"
@@ -650,13 +682,13 @@ test_agy_hook_requires_a_registered_workspace_token() {
   rm -f "$turnend"
   printf '%s' "$ROOT" >/dev/null
   payload=$(printf '{"fullyIdle":false,"workspacePaths":["%s"]}' "$dir/registered")
-  printf '%s' "$payload" | HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+  printf '%s' "$payload" | env -u FM_AGY_CONFIG_DIR HOME="$dir/no-agy-config" \
     PATH="$(dirname "$JQ_BIN"):$BASE_PATH" bash "$hook" idle >/dev/null 2>&1 \
     || fail "the agy hook must always exit zero"
   assert_absent "$turnend" "a mid-turn Stop fired the turn-end marker"
 
   payload=$(printf '{"workspacePaths":["%s"]}' "$dir/registered")
-  printf '%s' "$payload" | HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+  printf '%s' "$payload" | env -u FM_AGY_CONFIG_DIR HOME="$dir/no-agy-config" \
     PATH="$(dirname "$JQ_BIN"):$BASE_PATH" bash "$hook" busy >/dev/null 2>&1 \
     || fail "the agy hook must always exit zero"
   assert_grep 'state=busy source=agy-hook' "$state/hooked.busy-state" \
@@ -664,7 +696,7 @@ test_agy_hook_requires_a_registered_workspace_token() {
 
   # A payload with no workspace at all - agy's shape when --add-dir is absent.
   rm -f "$turnend"
-  printf '{"fullyIdle":true,"workspacePaths":[]}' | HOME="$dir" FM_AGY_CONFIG_DIR="$dir/gemini/config" \
+  printf '{"fullyIdle":true,"workspacePaths":[]}' | env -u FM_AGY_CONFIG_DIR HOME="$dir/no-agy-config" \
     PATH="$(dirname "$JQ_BIN"):$BASE_PATH" bash "$hook" idle >/dev/null 2>&1 \
     || fail "the agy hook must always exit zero"
   assert_absent "$turnend" "an empty workspacePaths payload fired the turn-end marker"

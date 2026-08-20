@@ -1333,10 +1333,6 @@ resolve_kimi_binary() {
   return 1
 }
 
-# agy resolves from PATH only. The published install puts it at
-# ~/.local/bin/agy, but unlike kimi there is no documented fallback location to
-# fall back to, so an absent binary refuses before any endpoint exists rather
-# than guessing a path.
 # The PATH-only resolver agy and muse share: one published name, no documented
 # fallback location, so an absent binary refuses before any endpoint exists
 # rather than guessing a path. kimi keeps its own resolver because it genuinely
@@ -1361,6 +1357,8 @@ resolve_path_binary() {  # <name> <not-found-message>
   return 1
 }
 
+# The published agy install is ~/.local/bin/agy, but nothing documents a
+# fallback the way kimi's does, so PATH is the whole search.
 resolve_agy_binary() {
   resolve_path_binary agy \
     "error: agy executable not found on PATH; install the Antigravity CLI or select a different verified harness"
@@ -2298,9 +2296,30 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
   printf '%s\n' "$1" | grep -Eq "^[[:space:]]*>[[:space:]]+${FM_AGY_TRUST_ACCEPT}[[:space:]]*\$"
 }
 
+# 0 when the dialog has drawn a selected option row at all, whatever it names.
+# agy writes the question first and the options a moment later, so this is what
+# separates "the choices were reordered" - judgeable, and a refusal - from
+# "the choices are not on screen yet", which is just a frame to wait through.
+# Deliberately not tied to either option's wording: a release that RENAMES them
+# leaves the marker unmatched, which defers to the poll budget and still
+# refuses, rather than silently reading a rename as the trusting choice.
+agy_trust_selection_drawn() {  # <plain-pane-capture>
+  printf '%s\n' "$1" | grep -Eq '^[[:space:]]*>[[:space:]]+[^[:space:]]'
+}
+
 # Clear the trust dialog if one appears. Returns 0 when the pane is usable -
 # dialog accepted, or no dialog within the window - and 1 only when a dialog IS
-# showing but with something other than the trusting option selected.
+# showing with something other than the trusting option selected.
+#
+# A refusal is never taken on one read of a half-drawn screen. agy paints the
+# question before the options, and polls are 0.5s apart, so a frame carrying the
+# prompt with no selected row yet says nothing about which option is preselected
+# and the wait simply continues. The refusal fires once the screen is judgeable
+# - a selected row IS drawn and it is not the trusting one - or once the budget
+# expires having seen the prompt without the trusting row ever appearing. Both
+# forms still catch a genuine reordering; neither fires on a partial render.
+# This is the same rule the worktree wait below applies for the same reason: one
+# transient pane read is not evidence.
 #
 # The early exit takes POSITIVE proof that agy itself painted the pane, never
 # the mere absence of `unknown`, and never a composer verdict. No verdict is
@@ -2320,6 +2339,7 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
 # signature and bounds the read to the live rows.
 agy_clear_trust_dialog() {
   local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
+  local prompt_seen=0
   while [ "$i" -lt "$max" ]; do
     pane=$(agy_live_rows "$(agy_capture)")
     if agy_trust_dialog_ready "$pane"; then
@@ -2327,14 +2347,15 @@ agy_clear_trust_dialog() {
       return 0
     fi
     if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
-      return 1
-    fi
-    if fm_agy_footer_present "$pane"; then
+      prompt_seen=1
+      agy_trust_selection_drawn "$pane" && return 1
+    elif fm_agy_footer_present "$pane"; then
       return 0
     fi
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"
   done
+  [ "$prompt_seen" -eq 0 ] || return 1
   return 0
 }
 

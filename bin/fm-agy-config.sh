@@ -19,7 +19,10 @@
 #                 session Firstmate did not launch: they fire only when the
 #                 payload's workspacePaths holds a .fm-agy-turnend pointer whose
 #                 token names a Firstmate-created entry in the private registry
-#                 under ~/.gemini/config/fm-agy-turn-end.d/.
+#                 under ~/.gemini/config/fm-agy-turn-end.d/. That registry path
+#                 is BAKED into the installed hook rather than resolved from the
+#                 environment, so the hook can only ever read the registry it
+#                 was installed beside.
 #   skills.json   one entry declaring the user-level skills root, because agy
 #                 does NOT scan ~/.claude/skills or ~/.agents/skills on its own
 #                 and would otherwise never see the no-mistakes skill a crewmate
@@ -44,7 +47,9 @@
 # $HOME/.gemini/config. It is FIRSTMATE's own knob for test isolation, not a
 # vendor variable: agy resolves its config root from $HOME alone and honours no
 # environment override of its own (verified, agy 1.1.15), so pointing this
-# anywhere but agy's real directory installs a hook agy will never load.
+# anywhere but agy's real directory installs a hook agy will never load. It is
+# read at INSTALL time only; the hook it writes carries the resolved path, so a
+# stray export in one process cannot split the two ends of the guard apart.
 #   Both verbs take it, and remove drops only an entry it could have written -
 #   exactly {"path": <skills-root>} - so an entry the captain wrote for the same
 #   root with their own include_only/exclude filters is left alone.
@@ -81,6 +86,7 @@ SKILLS_ROOT=${2:-$HOME/.agents/skills}
 python3 - "$ACTION" "$AGY_CONFIG_DIR" "$SKILLS_ROOT" <<'PY'
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -99,9 +105,16 @@ HOOK_KEY = "firstmate-turn-end"
 # workspace from payload.workspacePaths, which fm-spawn populates by passing
 # --add-dir <worktree> (an agy launch without it reports an EMPTY array, so the
 # guard would simply never fire rather than fire wrongly).
-HOOK_BYTES = b'''#!/usr/bin/env bash
+HOOK_TEMPLATE = b'''#!/usr/bin/env bash
 # Firstmate agy turn-end and busy-state hook. Managed by fm-agy-config.sh.
 # Silent on every path, always exits zero.
+#
+# The registry directory below is BAKED IN at install time, never resolved from
+# the environment. The entry is minted by bin/fm-spawn.sh in firstmate's own
+# environment while this hook runs in whatever agy inherited from its pane, which
+# comes from the long-lived multiplexer daemon; reading FM_AGY_CONFIG_DIR at both
+# ends would let those two disagree, and since every path here is silent the
+# result would be a task whose signals never fire with nothing to say why.
 #
 # Registry entry format (written only by bin/fm-spawn.sh, mode 0700 directory,
 # one file per live Firstmate agy task), five lines:
@@ -117,8 +130,7 @@ exec >/dev/null 2>&1
 payload=
 IFS= read -r payload || [ -n "$payload" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
-[ -n "${HOME:-}" ] || exit 0
-auth_dir=${FM_AGY_CONFIG_DIR:-$HOME/.gemini/config}/fm-agy-turn-end.d
+auth_dir=@@AUTH_DIR@@
 [ -d "$auth_dir" ] || exit 0
 # agy reports a turn finished only when it is fully idle; a Stop carrying
 # fullyIdle=false is a mid-turn boundary and must publish neither idle nor a
@@ -152,6 +164,8 @@ while IFS= read -r workspace; do
 done <<< "$(jq -r '.workspacePaths[]? | strings' <<< "$payload" 2>/dev/null)"
 exit 0
 '''
+
+HOOK_BYTES = HOOK_TEMPLATE.replace(b"@@AUTH_DIR@@", shlex.quote(REGISTRY).encode("utf-8"))
 
 
 def refuse(reason):
