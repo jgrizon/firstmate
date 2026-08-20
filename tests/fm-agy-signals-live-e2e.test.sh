@@ -138,6 +138,10 @@ pass "agy still reports no workspace without --add-dir, so fm-spawn's binding is
 # `-i` keeps the session interactive, which is a different code path in agy than
 # `-p`, and CORRECTION 2 in this adapter's brief exists because an earlier probe
 # concluded the hook was headless-only. A pane is the only way to exercise it.
+# Both records are cleared first: case 2 already wrote the idle line into
+# live.busy-state, so an assertion made against the surviving copy would pass
+# whether or not this session published anything.
+rm -f "$STATE/live.turn-ended" "$STATE/live.busy-state"
 run_agy_interactive "$LAB/registered"
 for _ in $(seq 1 240); do
   [ -e "$STATE/live.turn-ended" ] && break
@@ -145,6 +149,6 @@ for _ in $(seq 1 240); do
 done
 [ -e "$STATE/live.turn-ended" ] \
   || fail "an interactive agy session did not fire its turn-end marker ($AGY_VERSION)"
-grep -q 'state=idle source=agy-hook' "$STATE/live.busy-state" \
+grep -q 'state=idle source=agy-hook' "$STATE/live.busy-state" 2>/dev/null \
   || fail "an interactive agy session did not record a semantic idle event ($AGY_VERSION)"
 pass "the agy global hook fires for the interactive -i launch fm-spawn actually uses ($AGY_VERSION)"

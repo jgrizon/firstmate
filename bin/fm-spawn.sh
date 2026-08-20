@@ -2296,16 +2296,21 @@ agy_trust_dialog_ready() {  # <plain-pane-capture>
 # showing but with something other than the trusting option selected.
 #
 # The early exit takes POSITIVE proof that agy itself painted the pane, never
-# the mere absence of `unknown`. No composer verdict alone is that proof.
-# `pending` is what the captain's own `❯` prompt row reads as while it still
-# carries the launch command with agy's startup output wrapping below it, and
-# `empty` is what the SAME row reads as once agy has died and the shell has
-# redrawn a bare prompt - the classifier's bare-glyph path answers `empty` with
-# no identity probe at all. Believing either would leave the dialog rendering
-# with nobody to accept it and the spawn reporting success on a wedged or dead
-# pane. So the gate wants both halves: the composer verdict `empty`, which is
-# cursor-anchored and structural, AND agy's own rendered footer on the same
-# capture (bin/fm-composer-lib.sh owns that signature), which no shell emits.
+# the mere absence of `unknown`, and never a composer verdict. No verdict is
+# that proof: `pending` is what the captain's own `❯` prompt row reads as while
+# it still carries the launch command, and `empty` is what the SAME row reads as
+# once agy has died and the shell has redrawn a bare prompt, because the
+# classifier's bare-glyph path answers `empty` with no identity probe at all.
+# Believing either would leave the dialog rendering with nobody to accept it and
+# the spawn reporting success on a wedged or dead pane.
+#
+# agy's own rendered footer is the one signal here no shell can emit, so it is
+# the whole gate. Either of its two tokens counts, because the launch rides in
+# on `-i` and agy is therefore mid-turn (`esc to cancel`) for the whole
+# post-launch window; requiring the idle token, or requiring an idle-only
+# composer verdict alongside it, would shut the gate exactly when it is needed
+# and cost every spawn its full poll budget. bin/fm-composer-lib.sh owns that
+# signature and bounds the read to the live rows.
 agy_clear_trust_dialog() {
   local pane i=0 max=${FM_AGY_TRUST_POLLS:-40} interval=${FM_AGY_POLL_INTERVAL:-0.5}
   while [ "$i" -lt "$max" ]; do
@@ -2317,8 +2322,7 @@ agy_clear_trust_dialog() {
     if printf '%s\n' "$pane" | grep -Fq "$FM_AGY_TRUST_PROMPT"; then
       return 1
     fi
-    if fm_agy_footer_present "$pane" \
-       && [ "$(fm_backend_composer_state "$BACKEND" "$T" "$W" 2>/dev/null)" = empty ]; then
+    if fm_agy_footer_present "$pane"; then
       return 0
     fi
     i=$((i + 1))

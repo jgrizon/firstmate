@@ -345,14 +345,21 @@ FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc to cancel'
 FM_DELIVERY_AGY_IDLE_REGEX_DEFAULT='[?] for shortcuts'
 FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
 
-# fm_agy_footer_present: 0 when a plain pane capture carries one of agy's own
-# two rendered footers. This is the ONLY positive evidence in the fleet that an
-# agy process, rather than the shell it was launched from, painted a pane: the
-# composer verdict cannot carry it, because `empty` is also reachable through
-# the bare-glyph path below with no identity probe at all, so a dead shell whose
-# prompt row is a bare agent glyph reads `empty` on its own.
-fm_agy_footer_present() {  # <plain-pane-capture>
+# fm_agy_footer_present: 0 when a pane capture is CURRENTLY showing one of agy's
+# own two rendered footers. This is the ONLY positive evidence in the fleet that
+# an agy process, rather than the shell it was launched from, painted a pane:
+# the composer verdict cannot carry it, because `empty` is also reachable
+# through the bare-glyph path below with no identity probe at all, so a dead
+# shell whose prompt row is a bare agent glyph reads `empty` on its own.
+#
+# Only the last 12 non-blank rows are read, the same window fm_pane_busy_state
+# uses and for the same reason: a capture carries scrollback, so a footer agy
+# printed before it exited would otherwise still match from a pane that is now a
+# dead shell - exactly the state this predicate exists to rule out.
+fm_agy_footer_present() {  # <pane-capture>
   printf '%s\n' "${1-}" \
+    | grep -v '^[[:space:]]*$' \
+    | tail -12 \
     | grep -qE "$FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT|$FM_DELIVERY_AGY_IDLE_REGEX_DEFAULT"
 }
 

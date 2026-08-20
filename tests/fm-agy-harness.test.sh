@@ -56,6 +56,15 @@ AGY_DEAD_SHELL_SCREEN=$(printf '%s\n' \
   'agy: error: unknown model id' \
   '❯ ')
 
+# The same dead pane, but with a footer agy really did render still sitting in
+# SCROLLBACK above it. A capture carries history, so an unbounded footer scan
+# would read this pane as a live agy; only the live rows may count.
+AGY_STALE_FOOTER_SCREEN=$(
+  printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
+  seq 1 12 | sed 's/^/  transcript row /'
+  printf '%s\n' "$AGY_DEAD_SHELL_SCREEN"
+)
+
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -75,11 +84,15 @@ fake_screen() {
       printf '\n  ↑/↓ Navigate · enter Confirm\n'
       ;;
     running)
+      # A real `-i` launch is MID-TURN the moment agy is up: the brief rode in
+      # on the launch command, so the footer agy actually renders here is the
+      # busy one and the composer verdict is `unknown`, not `empty`.
       rule; printf '> \n'; rule
-      printf '? for shortcuts                  Gemini 3.7 Flash · low\n'
+      printf 'esc to cancel                    Gemini 3.7 Flash · low\n'
       ;;
     pending) hold_then_trust "$FM_FAKE_AGY_PENDING_SCREEN" ;;
     dead-shell) hold_then_trust "$FM_FAKE_AGY_DEAD_SCREEN" ;;
+    stale-footer) hold_then_trust "$FM_FAKE_AGY_STALE_SCREEN" ;;
     *) printf 'shell starting\n$ \n' ;;
   esac
 }
@@ -96,6 +109,7 @@ fake_cursor_y() {
   case "$state" in
     running) printf '1\n' ;;
     dead-shell) printf '2\n' ;;
+    stale-footer) printf '15\n' ;;
     *) printf '0\n' ;;
   esac
 }
@@ -108,6 +122,7 @@ fake_current_command() {
     *) printf 'bash\n' ;;
   esac
 }
+
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "$FM_FAKE_PANE_PATH"; exit 0 ;;
   *"#{cursor_y}"*) fake_cursor_y; exit 0 ;;
@@ -206,6 +221,7 @@ run_spawn() {
     FM_FAKE_AGY_FIRST_SCREEN="${FM_FAKE_AGY_FIRST_SCREEN:-trust}" \
     FM_FAKE_AGY_PENDING_SCREEN="$AGY_PRELAUNCH_SCREEN" \
     FM_FAKE_AGY_DEAD_SCREEN="$AGY_DEAD_SHELL_SCREEN" \
+    FM_FAKE_AGY_STALE_SCREEN="$AGY_STALE_FOOTER_SCREEN" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
     FM_AGY_TRUST_POLLS="${FM_AGY_TRUST_POLLS:-3}" FM_AGY_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
@@ -312,11 +328,11 @@ test_agy_trust_dialog_is_accepted_only_when_preselected() {
 }
 
 # A composer verdict of `pending` is reachable from the pane BEFORE agy has
-# drawn anything, so it is not proof agy started. Only `empty` is: the separated
-# shape reaches it solely through a live agy process holding the pane
-# foreground. A wait that stopped on `pending` would leave the dialog rendering
-# with nobody to accept it and report the spawn as a success.
-test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown() {
+# drawn anything, so it is not proof agy started - and neither is any other
+# verdict, which is why the wait turns on agy's own rendered footer instead. A
+# wait that stopped on `pending` would leave the dialog rendering with nobody to
+# accept it and report the spawn as a success.
+test_agy_trust_wait_is_not_ended_by_a_pending_pre_launch_screen() {
   local id rec caps verdict keys
   # shellcheck source=/dev/null
   . "$ROOT/bin/fm-composer-lib.sh"
@@ -341,8 +357,9 @@ test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown() {
 
 # `empty` is NOT proof agy started: the classifier's bare-glyph path reaches it
 # with no identity probe, so a pane whose agy died and whose shell redrew a bare
-# prompt reads `empty` on its own. agy's own rendered footer is the half a shell
-# cannot forge, so the gate needs both.
+# prompt reads `empty` on its own. agy's own rendered footer on the LIVE rows is
+# the one thing a shell cannot forge, so that is the whole gate - and a footer
+# left behind in scrollback does not count either.
 test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
   local id rec caps verdict keys captures
   # shellcheck source=/dev/null
@@ -357,6 +374,11 @@ test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
     || fail "agy's idle footer was not recognized as agy's own"
   fm_agy_footer_present "$(agy_screen '' 'esc to cancel')" \
     || fail "agy's busy footer was not recognized as agy's own"
+  verdict=$(fm_composer_classify_screen "$caps" "$AGY_STALE_FOOTER_SCREEN" 15 probe-absent)
+  [ "$verdict" = empty ] \
+    || fail "the stale-footer case needs a dead pane the classifier reads empty, got '$verdict'"
+  ! fm_agy_footer_present "$AGY_STALE_FOOTER_SCREEN" \
+    || fail "a footer left in scrollback was credited to a pane that is now a dead shell"
 
   id=agy-dead-shell-z2d
   rec=$(make_spawn_case dead-shell "$id")
@@ -370,9 +392,21 @@ test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty() {
   [ "$(cat "$CASE_DIR/agy.state")" = running ] \
     || fail "the trust dialog after a dead-looking screen was never cleared"
 
+  id=agy-stale-footer-z2f
+  rec=$(make_spawn_case stale-footer "$id")
+  read_spawn_record "$rec"
+  FM_FAKE_AGY_FIRST_SCREEN=stale-footer FM_AGY_TRUST_POLLS=8 run_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" >/dev/null \
+    || fail "agy spawn should succeed when the dialog renders after a stale-footer screen"
+  keys=$(post_launch_enters "$CASE_DIR")
+  [ "$keys" -eq 2 ] \
+    || fail "a footer left in scrollback ended the trust wait early (got $keys Enters)"
+  [ "$(cat "$CASE_DIR/agy.state")" = running ] \
+    || fail "the trust dialog after a stale-footer screen was never cleared"
+
   # And the gate must still FIRE on a real agy pane, or every spawn would just
-  # burn its whole poll budget. A live agy foreground process plus agy's own
-  # footer ends the wait long before the 20-poll budget is spent.
+  # burn its whole poll budget. The pane a real `-i` launch produces is MID-TURN
+  # - busy footer, composer `unknown` - so that is the state asserted here.
   id=agy-started-z2e
   rec=$(make_spawn_case started "$id")
   read_spawn_record "$rec"
@@ -807,7 +841,7 @@ test_agy_tmux_liveness_classifies_the_agent() {
 
 test_agy_launch_shape_and_wiring
 test_agy_trust_dialog_is_accepted_only_when_preselected
-test_agy_trust_wait_takes_positive_proof_not_a_missing_unknown
+test_agy_trust_wait_is_not_ended_by_a_pending_pre_launch_screen
 test_agy_trust_wait_rejects_a_dead_shell_that_reads_empty
 test_agy_secondmate_is_refused
 test_agy_missing_binary_refuses_before_pane_creation
